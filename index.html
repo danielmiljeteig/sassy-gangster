@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sassy Gangster! 💅🔪</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Press Start 2P', system-ui;
+            overflow: hidden;
+            image-rendering: pixelated;
+        }
+
+        canvas {
+            image-rendering: pixelated;
+            border: 8px solid #ff00ff;
+            box-shadow: 0 0 0 8px #000,
+                        0 0 0 16px #00ffff;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            pointer-events: none;
+            z-index: 10;
+            color: #fff;
+            text-shadow: 3px 3px 0 #000;
+        }
+
+        .bar-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .label {
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        .bar {
+            flex: 1;
+            height: 24px;
+            background: #222;
+            border: 4px solid #ff00ff;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .fill {
+            height: 100%;
+            transition: width 0.2s;
+        }
+
+        #money {
+            font-size: 28px;
+            color: #00ff00;
+        }
+
+        #start-screen, #game-over-screen, #level-complete-screen {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.95);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #ff00ff;
+            text-align: center;
+            z-index: 100;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin: 0;
+            text-shadow: 6px 6px 0 #00ffff;
+            animation: sass-pulse 1s infinite alternate;
+        }
+
+        button {
+            margin-top: 30px;
+            padding: 20px 40px;
+            font-family: 'Press Start 2P', system-ui;
+            font-size: 24px;
+            background: #ff00ff;
+            color: #000;
+            border: 6px solid #00ffff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.1) rotate(5deg);
+            background: #00ffff;
+            color: #ff00ff;
+        }
+
+        @keyframes sass-pulse {
+            from { transform: scale(1); }
+            to { transform: scale(1.05); }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="game" width="1280" height="720"></canvas>
+
+    <div id="ui">
+        <div class="bar-container">
+            <div class="label">💰 LUNCH MONEY</div>
+            <div id="money">$0000</div>
+        </div>
+
+        <div class="bar-container">
+            <div class="label">🔥 HEAT</div>
+            <div class="bar"><div id="heat-bar" class="fill" style="background: linear-gradient(90deg, #ffff00, #ff0000); width: 0%;"></div></div>
+        </div>
+
+        <div class="bar-container">
+            <div class="label">💅 SASS COMBO</div>
+            <div id="combo" style="font-size:24px; color:#00ffff;">×1</div>
+        </div>
+    </div>
+
+    <div id="start-screen">
+        <h1>SASSY GANGSTER!</h1>
+        <p style="font-size:24px; margin:20px 0; color:#00ffff;">Rob the playground. Own the streets. Slay the game.</p>
+        <button onclick="startGame()">START STRUTTIN' 💅</button>
+        <p style="margin-top:40px; font-size:14px;">← → or A/D = Strut SPACE = Jump J or Click = SASSY SHANK</p>
+    </div>
+
+    <div id="game-over-screen">
+        <h1>GIRL, YOU GOT CAUGHT!</h1>
+        <p id="final-score" style="font-size:28px; color:#ff0000; margin:20px 0;"></p>
+        <button onclick="restartGame()">TRY AGAIN QUEEN</button>
+    </div>
+
+    <div id="level-complete-screen">
+        <h1>LEVEL COMPLETE, BESTIE!</h1>
+        <p id="level-score" style="font-size:28px; color:#00ff00; margin:20px 0;"></p>
+        <button onclick="nextLevel()">NEXT LEVEL →</button>
+    </div>
+
+    <script>
+        // =============================================
+        // SASSY GANGSTER! - Full Browser Game
+        // Single-file HTML5 Canvas masterpiece
+        // =============================================
+
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+
+        let gameState = 'start'; // start, playing, paused, gameover, levelcomplete
+        let score = 0;
+        let heat = 0;
+        let combo = 1;
+        let comboTimer = 0;
+
+        // Player object
+        let player = {
+            x: 150,
+            y: 400,
+            width: 80,
+            height: 120,
+            vx: 0,
+            vy: 0,
+            speed: 6,
+            jumpPower: -18,
+            onGround: false,
+            facing: 1,
+            shankCooldown: 0,
+            animationFrame: 0,
+            state: 'idle' // idle, walk, jump, shank, pose
+        };
+
+        // Camera
+        let cameraX = 0;
+        const LEVEL_WIDTH = 3800;
+
+        // Level data - First Level: PLAYGROUND PANIC
+        let level = {
+            name: "Playground Panic",
+            groundY: 520,
+            bgColor: '#1a0033',
+            parallaxLayers: [
+                { color: '#330066', speed: 0.2, elements: [] },
+                { color: '#6600cc', speed: 0.5, elements: [] }
+            ],
+            platforms: [
+                // ground
+                {x:0, y:520, w:LEVEL_WIDTH, h:200},
+                // jungle gym platforms
+                {x:600, y:400, w:280, h:20},
+                {x:1100, y:320, w:180, h:20},
+                {x:1600, y:450, w:220, h:20},
+                {x:2100, y:280, w:300, h:20},
+                {x:2600, y:380, w:150, h:20},
+            ],
+            victims: [],
+            particles: [],
+            moneyBags: []
+        };
+
+        // Victim template
+        class Victim {
+            constructor(x, type) {
+                this.x = x;
+                this.y = level.groundY - 80;
+                this.width = 60;
+                this.height = 90;
+                this.type = type; // 'kid', 'teen', 'nerd', 'lunchlady'
+                this.wallet = type === 'kid' ? 25 : type === 'teen' ? 45 : type === 'nerd' ? 60 : 100;
+                this.trauma = 0;
+                this.maxTrauma = type === 'kid' ? 80 : type === 'teen' ? 120 : 150;
+                this.alive = true;
+                this.fainted = false;
+                this.shankCount = 0;
+                this.vx = 0;
+                this.animationOffset = Math.random() * Math.PI * 2;
+            }
+
+            update() {
+                if (!this.alive || this.fainted) return;
+                // slight idle sway
+                this.vx = Math.sin(Date.now()/300 + this.animationOffset) * 0.6;
+                this.x += this.vx;
+            }
+        }
+
+        // Particle system for sparkles, money, hearts
+        class Particle {
+            constructor(x, y, type) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 8;
+                this.vy = (Math.random() - 0.5) * 8 - 3;
+                this.life = 60;
+                this.type = type; // 'sparkle', 'coin', 'heart', 'text'
+                this.value = type === 'coin' ? Math.floor(Math.random()*8)+3 : 0;
+                this.color = type === 'sparkle' ? '#ff00ff' : type === 'coin' ? '#00ff00' : '#ffff00';
+                this.size = 12;
+            }
+        }
+
+        // Keyboard
+        let keys = {};
+        window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
+        window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+        // Mouse / Touch for shank
+        let mouseX = 0, mouseY = 0;
+        canvas.addEventListener('mousedown', e => {
+            if (gameState === 'playing') attemptShank();
+        });
+        canvas.addEventListener('touchstart', e => {
+            if (gameState === 'playing') {
+                e.preventDefault();
+                attemptShank();
+            }
+        });
+
+        function attemptShank() {
+            if (player.shankCooldown > 0) return;
+
+            player.state = 'shank';
+            player.animationFrame = 0;
+            player.shankCooldown = 25;
+
+            // Find nearby victim
+            let hit = false;
+            for (let v of level.victims) {
+                if (!v.alive || v.fainted) continue;
+                const dx = v.x - player.x;
+                if (Math.abs(dx) < 140 && Math.abs(v.y - player.y) < 100) {
+                    // HIT!
+                    hit = true;
+                    v.trauma += 28 + combo * 8;
+                    v.shankCount++;
+
+                    // Over-the-top feminine dance shank animation feedback
+                    createShankEffects(v.x + 20, v.y + 20);
+
+                    // Money pop
+                    score += Math.floor(v.wallet * 0.3 * combo);
+                    v.wallet = Math.max(0, v.wallet - Math.floor(v.wallet * 0.3));
+
+                    // Combo increase
+                    combo = Math.min(8, combo + 1);
+                    comboTimer = 120;
+
+                    if (v.trauma >= v.maxTrauma) {
+                        v.fainted = true;
+                        heat += 18;
+                        createFaintEffects(v.x, v.y);
+                    }
+                    break;
+                }
+            }
+
+            if (!hit) {
+                // Miss = small heat + lame animation
+                heat += 4;
+                combo = Math.max(1, combo - 2);
+            }
+
+            // Play sass sound (Web Audio)
+            playSassSound();
+        }
+
+        function createShankEffects(x, y) {
+            // Massive sparkles + hearts + dramatic lines
+            for (let i = 0; i < 28; i++) {
+                const p = new Particle(x, y, 'sparkle');
+                p.vx *= 1.8;
+                p.vy *= 1.8;
+                level.particles.push(p);
+            }
+            // hearts
+            for (let i = 0; i < 8; i++) {
+                const p = new Particle(x + Math.random()*60-30, y + Math.random()*40-20, 'heart');
+                level.particles.push(p);
+            }
+            // money text pop
+            const moneyPop = new Particle(x+40, y-30, 'text');
+            moneyPop.value = Math.floor(Math.random()*12 + 8);
+            level.particles.push(moneyPop);
+        }
+
+        function createFaintEffects(x, y) {
+            for (let i = 0; i < 15; i++) {
+                const p = new Particle(x, y-20, 'heart');
+                p.vy = -Math.random()*6 - 2;
+                p.life = 45;
+                level.particles.push(p);
+            }
+            // dramatic "X_X" faint
+        }
+
+        function playSassSound() {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            osc.frequency.setValueAtTime(680 + Math.random()*300, audioCtx.currentTime);
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0.3;
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.12);
+
+            // Second higher note for sassy flair
+            setTimeout(() => {
+                const osc2 = audioCtx.createOscillator();
+                osc2.frequency.setValueAtTime(920, audioCtx.currentTime);
+                const gain2 = audioCtx.createGain();
+                gain2.gain.value = 0.2;
+                osc2.connect(gain2).connect(audioCtx.destination);
+                osc2.start();
+                osc2.stop(audioCtx.currentTime + 0.18);
+            }, 60);
+        }
+
+        function drawPlayer() {
+            const px = player.x - cameraX;
+            const py = player.y;
+
+            ctx.save();
+            ctx.translate(px + player.width/2, py + player.height/2);
+            if (player.facing < 0) ctx.scale(-1, 1);
+
+            // Hair (big bouffant)
+            ctx.fillStyle = '#ff66cc';
+            ctx.beginPath();
+            ctx.ellipse(-5, -48, 42, 38, 0, 0, Math.PI*2);
+            ctx.fill();
+
+            // Head
+            ctx.fillStyle = '#f5c8a8';
+            ctx.beginPath();
+            ctx.arc(0, -22, 22, 0, Math.PI*2);
+            ctx.fill();
+
+            // Hoop earring
+            ctx.strokeStyle = '#ffd700';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.arc(18, -18, 9, 0, Math.PI*2);
+            ctx.stroke();
+
+            // Body - pinstripe skirt suit
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(-32, -8, 64, 72);
+
+            // Pinstripes
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 3;
+            for (let i = -28; i < 32; i += 9) {
+                ctx.beginPath();
+                ctx.moveTo(i, -8);
+                ctx.lineTo(i, 64);
+                ctx.stroke();
+            }
+
+            // Shoulder pads
+            ctx.fillStyle = '#ff00ff';
+            ctx.fillRect(-38, -14, 18, 18);
+            ctx.fillRect(20, -14, 18, 18);
+
+            // Arms
+            ctx.fillStyle = '#f5c8a8';
+            // left arm
+            ctx.save();
+            ctx.rotate(player.state === 'shank' ? -1.4 : -0.6);
+            ctx.fillRect(-34, 2, 14, 48);
+            ctx.restore();
+            // right arm (shank arm)
+            ctx.save();
+            ctx.rotate(player.state === 'shank' ? (player.animationFrame < 8 ? 2.4 : -0.8) : 0.8);
+            ctx.fillRect(22, 2, 14, 48);
+            ctx.restore();
+
+            // Switchblade (rhinestone!)
+            if (player.state === 'shank') {
+                ctx.strokeStyle = '#00ffff';
+                ctx.lineWidth = 8;
+                ctx.shadowBlur = 30;
+                ctx.shadowColor = '#00ffff';
+                ctx.beginPath();
+                ctx.moveTo(38, 32);
+                ctx.lineTo(78, -12);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // blade sparkle
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(72, -18, 8, 4);
+            }
+
+            // Legs
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(-26, 54, 18, 38);
+            ctx.fillRect(8, 54, 18, 38);
+
+            // Heels (6-inch drama)
+            ctx.fillStyle = '#ff00ff';
+            ctx.fillRect(-32, 88, 28, 12);
+            ctx.fillRect(2, 88, 28, 12);
+
+            // Heel tips
+            ctx.fillStyle = '#ffd700';
+            ctx.fillRect(-8, 94, 8, 8);
+            ctx.fillRect(26, 94, 8, 8);
+
+            ctx.restore();
+
+            // Floating name tag when combo high
+            if (combo > 3) {
+                ctx.fillStyle = '#ffff00';
+                ctx.font = 'bold 18px Press Start 2P';
+                ctx.textAlign = 'center';
+                ctx.fillText('SLAYING', px + 40, py - 90);
+            }
+        }
+
+        function updatePlayer() {
+            // Horizontal movement
+            player.vx = 0;
+            if (keys['a'] || keys['arrowleft']) {
+                player.vx = -player.speed;
+                player.facing = -1;
+            }
+            if (keys['d'] || keys['arrowright']) {
+                player.vx = player.speed;
+                player.facing = 1;
+            }
+
+            // Jump
+            if ((keys[' '] || keys['space']) && player.onGround) {
+                player.vy = player.jumpPower;
+                player.onGround = false;
+            }
+
+            // Gravity
+            player.vy += 0.9;
+
+            // Apply velocity
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Ground collision
+            player.onGround = false;
+            if (player.y + player.height > level.groundY) {
+                player.y = level.groundY - player.height;
+                player.vy = 0;
+                player.onGround = true;
+            }
+
+            // Platform collisions
+            for (let p of level.platforms) {
+                if (player.vx > 0 && player.x + player.width > p.x && player.x < p.x + p.w &&
+                    player.y + player.height > p.y && player.y + player.height - player.vy <= p.y) {
+                    player.y = p.y - player.height;
+                    player.vy = 0;
+                    player.onGround = true;
+                }
+            }
+
+            // Keep in bounds
+            player.x = Math.max(80, Math.min(LEVEL_WIDTH - 200, player.x));
+
+            // Animation state
+            if (player.state === 'shank') {
+                player.animationFrame++;
+                if (player.animationFrame > 18) {
+                    player.state = 'idle';
+                }
+            } else if (!player.onGround) {
+                player.state = 'jump';
+            } else if (Math.abs(player.vx) > 1) {
+                player.state = 'walk';
+            } else {
+                player.state = 'idle';
+            }
+
+            // Cooldown
+            if (player.shankCooldown > 0) player.shankCooldown--;
+
+            // Camera follow
+            const targetCam = player.x - 400;
+            cameraX = Math.max(0, Math.min(LEVEL_WIDTH - canvas.width, cameraX * 0.92 + targetCam * 0.08));
+        }
+
+        function spawnInitialVictims() {
+            level.victims = [];
+            // Kids
+            level.victims.push(new Victim(620, 'kid'));
+            level.victims.push(new Victim(780, 'kid'));
+            level.victims.push(new Victim(1250, 'kid'));
+            // Teens
+            level.victims.push(new Victim(1720, 'teen'));
+            level.victims.push(new Victim(1980, 'teen'));
+            // Nerd
+            level.victims.push(new Victim(2280, 'nerd'));
+            // Lunch Lady (mini-boss vibe)
+            level.victims.push(new Victim(2950, 'lunchlady'));
+        }
+
+        function updateVictims() {
+            for (let i = level.victims.length - 1; i >= 0; i--) {
+                const v = level.victims[i];
+                v.update();
+
+                // Remove off-screen fainted victims
+                if (v.x + cameraX < -200 && v.fainted) {
+                    level.victims.splice(i, 1);
+                }
+            }
+        }
+
+        function updateParticles() {
+            for (let i = level.particles.length - 1; i >= 0; i--) {
+                const p = level.particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.3;
+                p.life--;
+                if (p.life <= 0) level.particles.splice(i, 1);
+            }
+        }
+
+        function drawBackground() {
+            // Sky gradient
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, '#330066');
+            grad.addColorStop(1, '#ff99ff');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Parallax clouds / buildings
+            ctx.fillStyle = '#ff66cc';
+            ctx.globalAlpha = 0.3;
+            for (let i = 0; i < 8; i++) {
+                const x = ((i * 220) - (cameraX * 0.2) % 1760);
+                ctx.fillRect(x, 140, 120, 60);
+            }
+            ctx.globalAlpha = 1;
+
+            // Playground elements (static)
+            // Jungle gym
+            ctx.strokeStyle = '#00ffff';
+            ctx.lineWidth = 14;
+            ctx.beginPath();
+            ctx.moveTo(620 - cameraX, 380);
+            ctx.lineTo(880 - cameraX, 380);
+            ctx.moveTo(620 - cameraX, 380);
+            ctx.lineTo(620 - cameraX, 520);
+            ctx.stroke();
+
+            // Slide
+            ctx.fillStyle = '#ff00ff';
+            ctx.fillRect(1650 - cameraX, 300, 40, 220);
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(1690 - cameraX, 300, 140, 30);
+
+            // Swings (simple)
+            ctx.strokeStyle = '#ffd700';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(1150 - cameraX, 180);
+            ctx.lineTo(1150 - cameraX, 420);
+            ctx.moveTo(1350 - cameraX, 180);
+            ctx.lineTo(1350 - cameraX, 420);
+            ctx.stroke();
+        }
+
+        function drawVictims() {
+            for (let v of level.victims) {
+                const sx = v.x - cameraX;
+                if (sx < -100 || sx > canvas.width + 100) continue;
+
+                ctx.save();
+                ctx.translate(sx, v.y);
+
+                // Different victim art based on type
+                if (v.type === 'kid') {
+                    ctx.fillStyle = '#66ff99';
+                    ctx.fillRect(-20, -60, 40, 55); // body
+                    ctx.fillStyle = '#f5c8a8';
+                    ctx.fillRect(-18, -78, 36, 28); // head
+                    ctx.fillStyle = '#333';
+                    ctx.fillRect(-12, -68, 8, 8); // eyes
+                    ctx.fillRect(4, -68, 8, 8);
+                } else if (v.type === 'teen') {
+                    ctx.fillStyle = '#3366ff';
+                    ctx.fillRect(-24, -70, 48, 70); // jacket
+                    ctx.fillStyle = '#f5c8a8';
+                    ctx.fillRect(-22, -88, 44, 30); // head
+                } else if (v.type === 'nerd') {
+                    ctx.fillStyle = '#ffcc66';
+                    ctx.fillRect(-22, -65, 44, 55);
+                    ctx.fillStyle = '#f5c8a8';
+                    ctx.fillRect(-18, -80, 36, 26);
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(-14, -72, 28, 4); // glasses
+                } else if (v.type === 'lunchlady') {
+                    ctx.fillStyle = '#ff3366';
+                    ctx.fillRect(-32, -88, 64, 88); // dress
+                    ctx.fillStyle = '#f5c8a8';
+                    ctx.fillRect(-26, -108, 52, 32);
+                }
+
+                // Trauma indicator (sweat drops)
+                if (v.trauma > 30) {
+                    ctx.fillStyle = '#00ffff';
+                    ctx.font = 'bold 28px Arial';
+                    ctx.fillText('💧', -12, -110);
+                }
+
+                if (v.fainted) {
+                    ctx.fillStyle = '#333';
+                    ctx.font = 'bold 42px Arial';
+                    ctx.fillText('💀', -22, -30);
+                }
+
+                ctx.restore();
+            }
+        }
+
+        function drawParticles() {
+            for (let p of level.particles) {
+                const alpha = p.life / 60;
+                ctx.globalAlpha = alpha;
+
+                if (p.type === 'sparkle') {
+                    ctx.fillStyle = p.color;
+                    ctx.fillRect(p.x - cameraX - 4, p.y - 4, 8, 8);
+                } else if (p.type === 'coin') {
+                    ctx.fillStyle = '#00ff88';
+                    ctx.font = 'bold 22px Arial';
+                    ctx.fillText('💰', p.x - cameraX - 12, p.y);
+                } else if (p.type === 'heart') {
+                    ctx.fillStyle = '#ff00aa';
+                    ctx.font = '22px Arial';
+                    ctx.fillText('💖', p.x - cameraX - 12, p.y);
+                } else if (p.type === 'text') {
+                    ctx.fillStyle = '#ffff00';
+                    ctx.font = 'bold 26px Press Start 2P';
+                    ctx.fillText('$' + p.value, p.x - cameraX - 18, p.y);
+                }
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function drawUI() {
+            // Money
+            document.getElementById('money').textContent = '$' + String(Math.floor(score)).padStart(4, '0');
+
+            // Heat bar
+            const heatPercent = Math.min(100, heat);
+            document.getElementById('heat-bar').style.width = heatPercent + '%';
+
+            // Combo
+            document.getElementById('combo').textContent = '×' + combo;
+            document.getElementById('combo').style.color = combo > 4 ? '#ffff00' : '#00ffff';
+        }
+
+        function checkWinCondition() {
+            if (score >= 850 && heat < 95) {
+                gameState = 'levelcomplete';
+                document.getElementById('level-complete-screen').style.display = 'flex';
+                document.getElementById('level-score').innerHTML = `FINAL LUNCH: <span style="color:#00ff00">$${score}</span><br>HEAT: ${Math.floor(heat)}%`;
+            }
+        }
+
+        function checkGameOver() {
+            if (heat >= 100) {
+                gameState = 'gameover';
+                document.getElementById('game-over-screen').style.display = 'flex';
+                document.getElementById('final-score').innerHTML = `YOU ROBBED $<span style="color:#ffff00">${score}</span><br>BUT THE COPS GOT YOU 💅`;
+            }
+        }
+
+        function gameLoop() {
+            if (gameState !== 'playing') {
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            updatePlayer();
+            updateVictims();
+            updateParticles();
+
+            // Heat decay if playing well
+            if (Math.random() < 0.02) heat = Math.max(0, heat - 0.6);
+
+            comboTimer--;
+            if (comboTimer <= 0) combo = Math.max(1, combo - 1);
+
+            drawBackground();
+            // Draw platforms
+            ctx.fillStyle = '#00ff88';
+            for (let p of level.platforms) {
+                ctx.fillRect(p.x - cameraX, p.y, p.w, p.h);
+            }
+
+            drawVictims();
+            drawPlayer();
+            drawParticles();
+            drawUI();
+
+            checkWinCondition();
+            checkGameOver();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function startGame() {
+            document.getElementById('start-screen').style.display = 'none';
+            gameState = 'playing';
+            score = 0;
+            heat = 12;
+            combo = 1;
+            cameraX = 0;
+            player.x = 150;
+            player.y = level.groundY - player.height - 20;
+            spawnInitialVictims();
+            gameLoop();
+        }
+
+        function restartGame() {
+            document.getElementById('game-over-screen').style.display = 'none';
+            startGame();
+        }
+
+        function nextLevel() {
+            // For now, just restart with higher goal (future levels would be added here)
+            document.getElementById('level-complete-screen').style.display = 'none';
+            alert("🎉 CONGRATS BESTIE! You cleared the playground!\n\nNext level (School Cafeteria) coming in v1.1 💅");
+            startGame();
+        }
+
+        // Boot the game
+        window.onload = () => {
+            console.log('%cSassy Gangster! loaded and ready to SLAY 💅🔪', 'color:#ff00ff; font-size:18px; font-family:monospace');
+            // Preload nothing — everything is drawn in Canvas!
+        };
+    </script>
+</body>
+</html>
