@@ -181,7 +181,10 @@
             facing: 1,
             shankCooldown: 0,
             animationFrame: 0,
-            state: 'idle' // idle, walk, jump, shank, pose
+            shankFreezeTimer: 0,   // counts down during the freeze at connection
+            shankHitVictim: null,  // reference to the victim being stabbed
+            shankSoundPlayed: false,
+            state: 'idle'
         };
 
         // Camera
@@ -213,13 +216,26 @@
         };
 
         // Victim template
+        // Skin tones and hair options for victims
+        const SKIN_TONES = ['#f5c8a8', '#d4a574', '#c08a5a', '#8d5e3c', '#5c3a1e'];
+        const HAIR_COLORS = ['#0a0a0a', '#3a1a0a', '#6a4a2a', '#c8a050', '#aa3322', '#ddd'];
+        const HAIR_STYLES = ['buzz', 'curly', 'ponytail', 'bowl', 'mohawk', 'bald', 'long', 'afro'];
+
         class Victim {
-            constructor(x, type) {
+            constructor(x, type, pose) {
                 this.x = x;
-                this.y = level.groundY - 80;
                 this.width = 60;
                 this.height = 90;
-                this.type = type; // 'kid', 'teen', 'nerd', 'lunchlady'
+                this.type = type;
+                this.pose = pose || 'standing'; // 'standing', 'sitting_swing', 'sitting_bench'
+                // Y position depends on pose — standing on ground, sitting is higher
+                if (this.pose === 'sitting_swing') {
+                    this.y = level.groundY - 40; // sitting height on swing
+                } else if (this.pose === 'sitting_bench') {
+                    this.y = level.groundY - 50; // sitting on bench
+                } else {
+                    this.y = level.groundY; // feet on ground
+                }
                 this.wallet = type === 'kid' ? 25 : type === 'teen' ? 45 : type === 'nerd' ? 60 : 100;
                 this.trauma = 0;
                 this.maxTrauma = type === 'kid' ? 80 : type === 'teen' ? 120 : 150;
@@ -227,7 +243,14 @@
                 this.fainted = false;
                 this.shankCount = 0;
                 this.vx = 0;
+                this.crying = false;
                 this.animationOffset = Math.random() * Math.PI * 2;
+                // Randomized appearance
+                this.skin = SKIN_TONES[Math.floor(Math.random() * SKIN_TONES.length)];
+                this.hairColor = HAIR_COLORS[Math.floor(Math.random() * HAIR_COLORS.length)];
+                this.hairStyle = HAIR_STYLES[Math.floor(Math.random() * HAIR_STYLES.length)];
+                this.shirtColor = `hsl(${Math.random()*360}, ${40+Math.random()*30}%, ${30+Math.random()*30}%)`;
+                this.pantsColor = `hsl(${Math.random()*360}, ${20+Math.random()*20}%, ${20+Math.random()*20}%)`;
             }
 
             update() {
@@ -275,35 +298,20 @@
 
             player.state = 'shank';
             player.animationFrame = 0;
-            player.shankCooldown = 25;
+            player.shankFreezeTimer = 0;
+            player.shankSoundPlayed = false;
+            player.shankHitVictim = null;
+            player.shankCooldown = 50;
 
-            // Find nearby victim
+            // Find nearby victim — store reference, apply damage at connection
             let hit = false;
             for (let v of level.victims) {
                 if (!v.alive || v.fainted) continue;
                 const dx = v.x - player.x;
                 if (Math.abs(dx) < 140 && Math.abs(v.y - player.y) < 100) {
-                    // HIT!
                     hit = true;
-                    v.trauma += 28 + combo * 8;
-                    v.shankCount++;
-
-                    // Over-the-top feminine dance shank animation feedback
-                    createShankEffects(v.x + 20, v.y + 20);
-
-                    // Money pop
-                    score += Math.floor(v.wallet * 0.3 * combo);
-                    v.wallet = Math.max(0, v.wallet - Math.floor(v.wallet * 0.3));
-
-                    // Combo increase
-                    combo = Math.min(8, combo + 1);
-                    comboTimer = 120;
-
-                    if (v.trauma >= v.maxTrauma) {
-                        v.fainted = true;
-                        heat += 18;
-                        createFaintEffects(v.x, v.y);
-                    }
+                    player.shankHitVictim = v;
+                    v.crying = true; // will be set during connection
                     break;
                 }
             }
@@ -314,8 +322,6 @@
                 combo = Math.max(1, combo - 2);
             }
 
-            // Play sass sound (Web Audio)
-            playSassSound();
         }
 
         function createShankEffects(x, y) {
@@ -347,127 +353,568 @@
             // dramatic "X_X" faint
         }
 
-        function playSassSound() {
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = audioCtx.createOscillator();
-            osc.frequency.setValueAtTime(680 + Math.random()*300, audioCtx.currentTime);
-            const gain = audioCtx.createGain();
-            gain.gain.value = 0.3;
-            osc.connect(gain).connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.12);
+        // Preload sounds
+        const quackSound = new Audio('quack.mp3');
+        quackSound.volume = 0.5;
+        const roleRevealSound = new Audio('role-reveal.mp3');
+        roleRevealSound.volume = 0.6;
 
-            // Second higher note for sassy flair
-            setTimeout(() => {
-                const osc2 = audioCtx.createOscillator();
-                osc2.frequency.setValueAtTime(920, audioCtx.currentTime);
-                const gain2 = audioCtx.createGain();
-                gain2.gain.value = 0.2;
-                osc2.connect(gain2).connect(audioCtx.destination);
-                osc2.start();
-                osc2.stop(audioCtx.currentTime + 0.18);
-            }, 60);
+        function playSassSound() {
+            const snd = quackSound.cloneNode();
+            snd.volume = 0.4 + Math.random() * 0.2;
+            snd.playbackRate = 0.9 + Math.random() * 0.3;
+            snd.play().catch(() => {});
+        }
+
+        function playStartSound() {
+            roleRevealSound.currentTime = 0;
+            roleRevealSound.play().catch(() => {});
         }
 
         function drawPlayer() {
             const px = player.x - cameraX;
             const py = player.y;
+            const f = player.animationFrame;
+            const isShank = player.state === 'shank';
+            const t = Date.now();
+
+            // Shank phases (30 frames + 30 freeze at frame 16):
+            // 0-8: turn back to victim (flip) + show profile + start arch
+            // 9-16: deep backward arch, knife over head, blade connects at 16 → FREEZE 0.5s
+            // 17-24: spring back upright
+            // 25-30: turn back to face forward
+            const shankPhase = isShank ? (f <= 8 ? 0 : f <= 16 ? 1 : f <= 24 ? 2 : 3) : -1;
+            const isFrozen = isShank && f === 16 && player.shankFreezeTimer > 0;
+
+            // How much we've turned to face away (0→1)
+            let turnAway = 0;
+            // Profile narrowing (1=front, 0.55=profile)
+            let profileScale = 1;
+            // Backward arch angle (positive = arch backward, since char is flipped)
+            let archAngle = 0;
+
+            if (shankPhase === 0) {
+                const e = f / 8;
+                turnAway = e;         // turning away from victim
+                profileScale = 1 - e * 0.45; // narrow to profile
+                archAngle = e * 0.3;  // start arching
+            } else if (shankPhase === 1 || isFrozen) {
+                const e = Math.min(1, (f - 9) / 7);
+                turnAway = 1;
+                profileScale = 0.55;
+                archAngle = 0.3 + e * 0.55; // deep arch at 0.85 rad
+            } else if (shankPhase === 2) {
+                const e = (f - 17) / 7;
+                turnAway = 1 - e;
+                profileScale = 0.55 + e * 0.45;
+                archAngle = 0.85 * (1 - e);
+            } else if (shankPhase === 3) {
+                const e = (f - 25) / 5;
+                turnAway = 0;
+                profileScale = 1;
+                archAngle = 0;
+            }
 
             ctx.save();
             ctx.translate(px + player.width/2, py + player.height/2);
-            if (player.facing < 0) ctx.scale(-1, 1);
 
-            // Hair (big bouffant)
-            ctx.fillStyle = '#ff66cc';
+            // Facing: normally face toward victim. During shank, flip to face AWAY.
+            const baseFacing = player.facing;
+            if (isShank && turnAway > 0) {
+                // Flip: face opposite direction (back to victim)
+                ctx.scale(-baseFacing * (turnAway > 0.5 ? 1 : -1), 1);
+            } else {
+                if (baseFacing < 0) ctx.scale(-1, 1);
+            }
+
+            // Profile narrowing
+            if (isShank) {
+                ctx.scale(profileScale, 1);
+            }
+
+            // Backward arch — pivot from hips, arch upper body backward
+            if (isShank && archAngle > 0) {
+                ctx.translate(0, 40);
+                ctx.rotate(-archAngle); // negative = lean back
+                ctx.translate(0, -40);
+            }
+
+            // Walk bob & lean
+            const walkBob = player.state === 'walk' ? Math.sin(t / 80) * 3 : 0;
+            const walkLean = player.state === 'walk' ? Math.sin(t / 160) * 0.05 : 0;
+            ctx.rotate(walkLean);
+
+            // Ragdoll dangle parameters — arms swing with momentum
+            const dangleT = t / 1000;
+            const velDangle = player.vx * 0.08; // arms trail behind movement
+            const idleDangle = Math.sin(dangleT * 1.8) * 0.12;
+
+            // === HAIR (short black, tight) ===
+            ctx.fillStyle = '#0a0a0a';
+            // Main hair shape
             ctx.beginPath();
-            ctx.ellipse(-5, -48, 42, 38, 0, 0, Math.PI*2);
+            ctx.ellipse(0, -40 + walkBob, 24, 18, 0, Math.PI, Math.PI * 2);
+            ctx.fill();
+            // Top
+            ctx.beginPath();
+            ctx.ellipse(0, -44 + walkBob, 20, 12, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Sides (fade/taper)
+            ctx.fillStyle = '#151515';
+            ctx.beginPath();
+            ctx.ellipse(-18, -30 + walkBob, 6, 12, 0.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(18, -30 + walkBob, 6, 12, -0.2, 0, Math.PI * 2);
+            ctx.fill();
+            // Hair shine
+            ctx.fillStyle = '#222';
+            ctx.beginPath();
+            ctx.ellipse(5, -48 + walkBob, 8, 4, -0.3, 0, Math.PI * 2);
             ctx.fill();
 
-            // Head
-            ctx.fillStyle = '#f5c8a8';
+            // === HEAD ===
+            ctx.fillStyle = '#d4a574';
             ctx.beginPath();
-            ctx.arc(0, -22, 22, 0, Math.PI*2);
+            ctx.arc(0, -24 + walkBob, 20, 0, Math.PI * 2);
+            ctx.fill();
+            // Jaw
+            ctx.beginPath();
+            ctx.ellipse(0, -8 + walkBob, 13, 9, 0, 0, Math.PI);
             ctx.fill();
 
-            // Hoop earring
-            ctx.strokeStyle = '#ffd700';
-            ctx.lineWidth = 6;
+            // === FACE ===
+            const blinkCycle = Math.sin(t / 2500);
+            const eyeOpen = blinkCycle > 0.95 ? 0.2 : 1;
+            const lookDir = player.vx !== 0 ? player.vx * 0.25 : 0;
+
+            // Eye whites
+            ctx.fillStyle = '#fff';
             ctx.beginPath();
-            ctx.arc(18, -18, 9, 0, Math.PI*2);
+            ctx.ellipse(-7, -27 + walkBob, 5.5, 4 * eyeOpen, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(7, -27 + walkBob, 5.5, 4 * eyeOpen, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Pupils
+            if (eyeOpen > 0.5) {
+                ctx.fillStyle = '#1a0800';
+                ctx.beginPath();
+                ctx.arc(-7 + lookDir, -27 + walkBob, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(7 + lookDir, -27 + walkBob, 3, 0, Math.PI * 2);
+                ctx.fill();
+                // Shine
+                ctx.fillStyle = '#fff';
+                ctx.beginPath();
+                ctx.arc(-5.5 + lookDir, -29 + walkBob, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(8.5 + lookDir, -29 + walkBob, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Eyebrows (thick, dark)
+            ctx.strokeStyle = '#0a0a0a';
+            ctx.lineWidth = 3;
+            if (isShank) {
+                // Mean frown
+                ctx.beginPath();
+                ctx.moveTo(-13, -35 + walkBob);
+                ctx.lineTo(-3, -32 + walkBob);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(3, -32 + walkBob);
+                ctx.lineTo(13, -35 + walkBob);
+                ctx.stroke();
+            } else {
+                // Relaxed / slightly raised
+                ctx.beginPath();
+                ctx.moveTo(-12, -34 + walkBob);
+                ctx.quadraticCurveTo(-7, -36 + walkBob, -2, -33 + walkBob);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(2, -33 + walkBob);
+                ctx.quadraticCurveTo(7, -36 + walkBob, 12, -34 + walkBob);
+                ctx.stroke();
+            }
+
+            // Nose
+            ctx.strokeStyle = '#b08a60';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, -22 + walkBob);
+            ctx.lineTo(2, -16 + walkBob);
+            ctx.lineTo(-1, -14 + walkBob);
             ctx.stroke();
 
-            // Body - pinstripe skirt suit
-            ctx.fillStyle = '#1a1a1a';
-            ctx.fillRect(-32, -8, 64, 72);
+            // Mouth
+            if (shankPhase === 0) {
+                // Gritted teeth — focused
+                ctx.fillStyle = '#aa2233';
+                ctx.beginPath();
+                ctx.ellipse(0, -8 + walkBob, 5, 3, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(-4, -10 + walkBob, 8, 2);
+                ctx.fillRect(-4, -8 + walkBob, 8, 2);
+                ctx.fillStyle = '#aa2233';
+                ctx.fillRect(-1, -10 + walkBob, 1, 4);
+                ctx.fillRect(2, -10 + walkBob, 1, 4);
+            } else if (shankPhase === 1 || isFrozen) {
+                // Connection — open mouth yell
+                ctx.fillStyle = '#aa2233';
+                ctx.beginPath();
+                ctx.ellipse(0, -8 + walkBob, 7, 6, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(-4, -13 + walkBob, 8, 3);
+            } else if (shankPhase === 2 || shankPhase === 3) {
+                // Smirk
+                ctx.strokeStyle = '#884444';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.moveTo(-5, -8 + walkBob);
+                ctx.quadraticCurveTo(2, -3 + walkBob, 8, -9 + walkBob);
+                ctx.stroke();
+            } else {
+                // Neutral / slight grin
+                ctx.strokeStyle = '#884444';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.moveTo(-4, -8 + walkBob);
+                ctx.quadraticCurveTo(1, -5 + walkBob, 6, -9 + walkBob);
+                ctx.stroke();
+            }
 
-            // Pinstripes
+            // Stubble (subtle dots)
+            ctx.fillStyle = 'rgba(10, 10, 10, 0.15)';
+            for (let sx = -8; sx < 10; sx += 3) {
+                for (let sy = -6; sy < 2; sy += 3) {
+                    if (Math.sqrt(sx*sx + sy*sy) < 12) {
+                        ctx.fillRect(sx, sy + walkBob, 1.5, 1.5);
+                    }
+                }
+            }
+
+            // === BODY — TRACKSUIT ===
+            // Tracksuit jacket (dark with stripes)
+            ctx.fillStyle = '#1a1a2a';
+            // Torso
+            ctx.beginPath();
+            ctx.moveTo(-24, -4);
+            ctx.lineTo(24, -4);
+            ctx.lineTo(26, 42);
+            ctx.lineTo(-26, 42);
+            ctx.closePath();
+            ctx.fill();
+
+            // Tracksuit stripes (down the sides)
             ctx.strokeStyle = '#ff00ff';
             ctx.lineWidth = 3;
-            for (let i = -28; i < 32; i += 9) {
-                ctx.beginPath();
-                ctx.moveTo(i, -8);
-                ctx.lineTo(i, 64);
-                ctx.stroke();
+            // Left stripe
+            ctx.beginPath();
+            ctx.moveTo(-22, -2);
+            ctx.lineTo(-24, 42);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(-18, -2);
+            ctx.lineTo(-20, 42);
+            ctx.stroke();
+            // Right stripe
+            ctx.beginPath();
+            ctx.moveTo(22, -2);
+            ctx.lineTo(24, 42);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(18, -2);
+            ctx.lineTo(20, 42);
+            ctx.stroke();
+
+            // Zipper line
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, -2);
+            ctx.lineTo(0, 40);
+            ctx.stroke();
+            // Zipper pull
+            ctx.fillStyle = '#ccc';
+            ctx.fillRect(-2, 14, 4, 6);
+
+            // Collar (high, tracksuit style)
+            ctx.fillStyle = '#1a1a2a';
+            ctx.fillRect(-16, -8, 32, 6);
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-14, -8);
+            ctx.lineTo(-14, -2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(14, -8);
+            ctx.lineTo(14, -2);
+            ctx.stroke();
+
+            // === ARMS (ragdoll dangling) ===
+            let leftArmAngle, rightArmAngle;
+            let leftForearm, rightForearm; // extra dangle for forearm
+
+            if (shankPhase === 0) {
+                const e = f / 8;
+                // Left arm hangs down naturally
+                leftArmAngle = 0.3 * e;
+                leftForearm = 0.1 * e;
+                // Right arm (knife) starts rising overhead
+                rightArmAngle = -2.0 * e; // arm goes up over head
+                rightForearm = -0.4 * e;
+            } else if (shankPhase === 1 || isFrozen) {
+                // Knife arm reaches OVER head and BEHIND — arching back toward victim
+                const e = Math.min(1, (f - 9) / 7);
+                const breathe = (f === 16) ? Math.sin(player.shankFreezeTimer / 5) * 0.01 : 0;
+                leftArmAngle = 0.3 + 0.4 * e + breathe; // arm trails down/back
+                leftForearm = 0.1 + 0.2 * e;
+                // Knife arm goes from overhead (-2.0) further back to (-3.2)
+                // Since body is arched back, this makes knife reach behind and down
+                rightArmAngle = -2.0 - 1.2 * e + breathe;
+                rightForearm = -0.4 - 0.5 * e; // forearm extends for maximum reach
+            } else if (shankPhase === 2) {
+                // Spring back — arms return
+                const e = (f - 17) / 7;
+                leftArmAngle = 0.7 * (1 - e) + idleDangle * e;
+                leftForearm = 0.3 * (1 - e) + 0.15 * e;
+                rightArmAngle = -3.2 * (1 - e) + 0.05 * e;
+                rightForearm = -0.9 * (1 - e) + 0.12 * e;
+            } else if (shankPhase === 3) {
+                leftArmAngle = idleDangle;
+                rightArmAngle = 0.05 - idleDangle;
+                leftForearm = 0.15;
+                rightForearm = 0.12;
+            } else if (player.state === 'walk') {
+                // Ragdoll swing — arms dangle and lag behind
+                const swing = Math.sin(t / 130) * 0.6;
+                leftArmAngle = 0.05 + swing - velDangle;
+                rightArmAngle = 0.05 - swing - velDangle;
+                // Forearms swing with extra delay (more dangle)
+                const foreSwing = Math.sin(t / 130 - 0.5) * 0.4;
+                leftForearm = 0.2 + foreSwing;
+                rightForearm = 0.2 - foreSwing;
+            } else if (player.state === 'jump') {
+                // Arms float up loosely
+                leftArmAngle = -0.3 + idleDangle;
+                rightArmAngle = -0.2 - idleDangle;
+                leftForearm = -0.4;
+                rightForearm = -0.3;
+            } else {
+                // Idle: arms hang with slight sway
+                leftArmAngle = 0.08 + idleDangle;
+                rightArmAngle = 0.05 - idleDangle;
+                leftForearm = 0.15 + Math.sin(dangleT * 2.2) * 0.08;
+                rightForearm = 0.12 - Math.sin(dangleT * 2.5) * 0.08;
             }
 
-            // Shoulder pads
-            ctx.fillStyle = '#ff00ff';
-            ctx.fillRect(-38, -14, 18, 18);
-            ctx.fillRect(20, -14, 18, 18);
+            // Tracksuit sleeve color
+            const sleeveColor = '#1a1a2a';
+            const skinColor = '#d4a574';
 
-            // Arms
-            ctx.fillStyle = '#f5c8a8';
-            // left arm
+            // Left arm (upper + forearm)
             ctx.save();
-            ctx.rotate(player.state === 'shank' ? -1.4 : -0.6);
-            ctx.fillRect(-34, 2, 14, 48);
-            ctx.restore();
-            // right arm (shank arm)
-            ctx.save();
-            ctx.rotate(player.state === 'shank' ? (player.animationFrame < 8 ? 2.4 : -0.8) : 0.8);
-            ctx.fillRect(22, 2, 14, 48);
+            ctx.translate(-24, 0);
+            ctx.rotate(leftArmAngle);
+            ctx.fillStyle = sleeveColor;
+            ctx.fillRect(-5, 0, 10, 24);
+            // Sleeve stripe
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-5, 2);
+            ctx.lineTo(-5, 24);
+            ctx.stroke();
+            // Forearm (skin, dangles further)
+            ctx.translate(0, 24);
+            ctx.rotate(leftForearm);
+            ctx.fillStyle = skinColor;
+            ctx.fillRect(-4, 0, 8, 20);
+            // Hand
+            ctx.beginPath();
+            ctx.arc(0, 22, 6, 0, Math.PI * 2);
+            ctx.fill();
             ctx.restore();
 
-            // Switchblade (rhinestone!)
-            if (player.state === 'shank') {
+            // Right arm (upper + forearm)
+            ctx.save();
+            ctx.translate(24, 0);
+            ctx.rotate(rightArmAngle);
+            ctx.fillStyle = sleeveColor;
+            ctx.fillRect(-5, 0, 10, 24);
+            // Sleeve stripe
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(5, 2);
+            ctx.lineTo(5, 24);
+            ctx.stroke();
+            // Forearm
+            ctx.translate(0, 24);
+            ctx.rotate(rightForearm);
+            ctx.fillStyle = skinColor;
+            ctx.fillRect(-4, 0, 8, 20);
+            // Hand
+            ctx.beginPath();
+            ctx.arc(0, 22, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Knife in right hand during shank — long blade to reach victims
+            if (isShank) {
+                ctx.fillStyle = '#333';
+                ctx.fillRect(-3, 24, 6, 14); // handle (slightly bigger)
+                // Handle wrap
+                ctx.fillStyle = '#ff00ff';
+                ctx.fillRect(-2, 26, 4, 2);
+                ctx.fillRect(-2, 30, 4, 2);
+                ctx.fillRect(-2, 34, 4, 2);
+                // Long blade — reaches far down
+                ctx.fillStyle = '#c0d8e8';
+                ctx.beginPath();
+                ctx.moveTo(-3, 38);
+                ctx.lineTo(0, 90); // much longer blade
+                ctx.lineTo(3, 38);
+                ctx.closePath();
+                ctx.fill();
+                // Blade edge highlight
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, 40);
+                ctx.lineTo(0, 88);
+                ctx.stroke();
+                // Blade shine spots
+                ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                ctx.fillRect(-1, 50, 2, 4);
+                ctx.fillRect(-1, 65, 2, 3);
+                // Glow on stab
+                if (shankPhase === 2) {
+                    ctx.shadowBlur = 25;
+                    ctx.shadowColor = '#00ffff';
+                    ctx.strokeStyle = '#00ffff';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(0, 38);
+                    ctx.lineTo(0, 90);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                }
+            }
+            ctx.restore();
+
+            // === LEGS (tracksuit pants) ===
+            const legSwing = player.state === 'walk' ? Math.sin(t / 120) * 0.35 : 0;
+
+            // Wide stance during shank pose
+            let leftLegAngle = legSwing;
+            let rightLegAngle = -legSwing;
+            let leftLegSpread = -10;
+            let rightLegSpread = 10;
+
+            if (shankPhase === 0) {
+                const e = f / 8;
+                leftLegAngle = 0.2 * e;
+                rightLegAngle = -0.15 * e;
+                leftLegSpread = -10 - 6 * e;
+                rightLegSpread = 10 + 6 * e;
+            } else if (shankPhase === 1 || isFrozen) {
+                leftLegAngle = 0.2;
+                rightLegAngle = -0.15;
+                leftLegSpread = -16;
+                rightLegSpread = 16;
+            } else if (shankPhase === 2) {
+                const e = (f - 17) / 7;
+                leftLegAngle = 0.2 * (1 - e);
+                rightLegAngle = -0.15 * (1 - e);
+                leftLegSpread = -16 + 6 * e;
+                rightLegSpread = 16 - 6 * e;
+            } else if (shankPhase === 3) {
+                leftLegAngle = 0;
+                rightLegAngle = 0;
+                leftLegSpread = -10;
+                rightLegSpread = 10;
+            }
+
+            // Left leg (front in lunge)
+            ctx.save();
+            ctx.translate(leftLegSpread, 40);
+            ctx.rotate(leftLegAngle);
+            ctx.fillStyle = '#1a1a2a';
+            ctx.fillRect(-8, 0, 16, 36);
+            // Pant stripe
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-8, 2);
+            ctx.lineTo(-8, 36);
+            ctx.stroke();
+            // Shoe
+            ctx.fillStyle = '#222';
+            ctx.fillRect(-10, 34, 20, 8);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-8, 34, 16, 3); // sole line
+            ctx.restore();
+
+            // Right leg (back in lunge)
+            ctx.save();
+            ctx.translate(rightLegSpread, 40);
+            ctx.rotate(rightLegAngle);
+            ctx.fillStyle = '#1a1a2a';
+            ctx.fillRect(-8, 0, 16, 36);
+            // Pant stripe
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(8, 2);
+            ctx.lineTo(8, 36);
+            ctx.stroke();
+            // Shoe
+            ctx.fillStyle = '#222';
+            ctx.fillRect(-10, 34, 20, 8);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-8, 34, 16, 3);
+            ctx.restore();
+
+            ctx.restore(); // end main player transform
+
+            // Connection flash during freeze
+            if (isFrozen && player.shankFreezeTimer < 5) {
+                ctx.globalAlpha = 0.3 * (1 - player.shankFreezeTimer / 5);
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.globalAlpha = 1;
+            }
+            // Knife impact sparkles during freeze
+            if (isFrozen && player.shankHitVictim) {
+                const v = player.shankHitVictim;
+                const vsx = v.x - cameraX;
+                ctx.globalAlpha = 0.5 + Math.sin(player.shankFreezeTimer / 2) * 0.3;
                 ctx.strokeStyle = '#00ffff';
-                ctx.lineWidth = 8;
-                ctx.shadowBlur = 30;
-                ctx.shadowColor = '#00ffff';
-                ctx.beginPath();
-                ctx.moveTo(38, 32);
-                ctx.lineTo(78, -12);
-                ctx.stroke();
-                ctx.shadowBlur = 0;
-
-                // blade sparkle
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(72, -18, 8, 4);
+                ctx.lineWidth = 2;
+                for (let i = 0; i < 6; i++) {
+                    const ang = (player.shankFreezeTimer / 3 + i * Math.PI / 3);
+                    const r = 12 + Math.sin(player.shankFreezeTimer / 2 + i) * 6;
+                    ctx.beginPath();
+                    ctx.moveTo(vsx, v.y - 60);
+                    ctx.lineTo(vsx + Math.cos(ang) * r, v.y - 60 + Math.sin(ang) * r);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
             }
 
-            // Legs
-            ctx.fillStyle = '#1a1a1a';
-            ctx.fillRect(-26, 54, 18, 38);
-            ctx.fillRect(8, 54, 18, 38);
-
-            // Heels (6-inch drama)
-            ctx.fillStyle = '#ff00ff';
-            ctx.fillRect(-32, 88, 28, 12);
-            ctx.fillRect(2, 88, 28, 12);
-
-            // Heel tips
-            ctx.fillStyle = '#ffd700';
-            ctx.fillRect(-8, 94, 8, 8);
-            ctx.fillRect(26, 94, 8, 8);
-
-            ctx.restore();
-
-            // Floating name tag when combo high
+            // "SLAYING" tag at high combo
             if (combo > 3) {
                 ctx.fillStyle = '#ffff00';
                 ctx.font = 'bold 18px Press Start 2P';
                 ctx.textAlign = 'center';
-                ctx.fillText('SLAYING', px + 40, py - 90);
+                ctx.fillText('SLAYING', px + player.width/2, py - 30 + Math.sin(t / 300) * 4);
             }
         }
 
@@ -519,9 +966,39 @@
 
             // Animation state
             if (player.state === 'shank') {
-                player.animationFrame++;
-                if (player.animationFrame > 18) {
+                // Freeze at connection point (frame 16) for 30 frames (~0.5s)
+                if (player.animationFrame === 16 && player.shankFreezeTimer < 30) {
+                    player.shankFreezeTimer++;
+                    // On first freeze frame: play sound + apply damage
+                    if (!player.shankSoundPlayed) {
+                        player.shankSoundPlayed = true;
+                        playSassSound();
+                        const v = player.shankHitVictim;
+                        if (v) {
+                            v.crying = true;
+                            v.trauma += 28 + combo * 8;
+                            v.shankCount++;
+                            createShankEffects(v.x + 20, v.y + 20);
+                            score += Math.floor(v.wallet * 0.3 * combo);
+                            v.wallet = Math.max(0, v.wallet - Math.floor(v.wallet * 0.3));
+                            combo = Math.min(8, combo + 1);
+                            comboTimer = 120;
+                            if (v.trauma >= v.maxTrauma) {
+                                v.fainted = true;
+                                heat += 18;
+                                createFaintEffects(v.x, v.y);
+                            }
+                        }
+                    }
+                } else {
+                    player.animationFrame++;
+                }
+                if (player.animationFrame > 30) {
                     player.state = 'idle';
+                    if (player.shankHitVictim) {
+                        player.shankHitVictim.crying = false;
+                    }
+                    player.shankHitVictim = null;
                 }
             } else if (!player.onGround) {
                 player.state = 'jump';
@@ -541,17 +1018,17 @@
 
         function spawnInitialVictims() {
             level.victims = [];
-            // Kids
-            level.victims.push(new Victim(620, 'kid'));
-            level.victims.push(new Victim(780, 'kid'));
-            level.victims.push(new Victim(1250, 'kid'));
-            // Teens
-            level.victims.push(new Victim(1720, 'teen'));
-            level.victims.push(new Victim(1980, 'teen'));
-            // Nerd
-            level.victims.push(new Victim(2280, 'nerd'));
-            // Lunch Lady (mini-boss vibe)
-            level.victims.push(new Victim(2950, 'lunchlady'));
+            // Kids — one standing, one on swing, one standing near slide
+            level.victims.push(new Victim(620, 'kid', 'standing'));
+            level.victims.push(new Victim(1180, 'kid', 'sitting_swing'));  // on swing
+            level.victims.push(new Victim(1700, 'kid', 'standing'));
+            // Teens — one standing, one on bench
+            level.victims.push(new Victim(1980, 'teen', 'standing'));
+            level.victims.push(new Victim(2820, 'teen', 'sitting_bench')); // on bench
+            // Nerd — sitting on bench
+            level.victims.push(new Victim(2840, 'nerd', 'sitting_bench'));
+            // Lunch Lady — standing near end
+            level.victims.push(new Victim(3200, 'lunchlady', 'standing'));
         }
 
         function updateVictims() {
@@ -577,49 +1054,1083 @@
             }
         }
 
+        // Seeded random for deterministic background elements
+        function seededRandom(seed) {
+            let s = seed;
+            return function() {
+                s = (s * 16807 + 0) % 2147483647;
+                return s / 2147483647;
+            };
+        }
+
+        // Pre-generate background elements once so they don't change each frame
+        const bgElements = {
+            buildings: [],
+            graffiti: [],
+            litter: [],
+            homeless: [],
+            trashCans: [],
+            puddles: [],
+            cracks: [],
+            posters: [],
+            fences: [],
+            grassBlades: [],
+            grassPatches: [],
+            dirtPatches: [],
+            pebbles: [],
+        };
+
+        function generateBackgroundElements() {
+            const rng = seededRandom(42069);
+
+            // City skyline buildings (far parallax)
+            for (let i = 0; i < 18; i++) {
+                bgElements.buildings.push({
+                    x: i * 240 + rng() * 80 - 40,
+                    w: 80 + rng() * 120,
+                    h: 80 + rng() * 200,
+                    color: `hsl(${270 + rng() * 40}, ${30 + rng() * 20}%, ${8 + rng() * 12}%)`,
+                    windows: Math.floor(rng() * 6) + 2,
+                    windowRows: Math.floor(rng() * 5) + 2,
+                    hasAntenna: rng() > 0.6,
+                    hasWaterTower: rng() > 0.8
+                });
+            }
+
+            // Graffiti tags on walls and ground — faded, bleak
+            const graffitiTexts = [
+                'SLAY', 'QUEEN', 'YOLO', 'THUG LYFE',
+                'GANG', 'RIP', 'SASS', 'DRIP',
+                'SKRRT', 'BRUH', 'GG', 'EZ'
+            ];
+            const graffitiColors = ['#665566', '#556666', '#666655', '#664444', '#446644', '#665533', '#665566'];
+            for (let i = 0; i < 15; i++) {
+                bgElements.graffiti.push({
+                    x: 200 + rng() * (LEVEL_WIDTH - 400),
+                    y: 440 + rng() * 70,
+                    text: graffitiTexts[Math.floor(rng() * graffitiTexts.length)],
+                    color: graffitiColors[Math.floor(rng() * graffitiColors.length)],
+                    size: 14 + rng() * 22,
+                    rotation: (rng() - 0.5) * 0.5,
+                    onGround: rng() > 0.6
+                });
+            }
+            // Unique Halden tags — placed once each
+            bgElements.graffiti.push({
+                x: 800, y: 460, text: 'HALDEN', color: '#555060',
+                size: 28, rotation: -0.08, onGround: false
+            });
+            bgElements.graffiti.push({
+                x: 2200, y: 470, text: 'AWF', color: '#505555',
+                size: 24, rotation: 0.12, onGround: false
+            });
+
+            // Litter scattered on ground
+            const litterTypes = ['can', 'bottle', 'bag', 'paper', 'cigarette', 'wrapper', 'needle'];
+            for (let i = 0; i < 45; i++) {
+                bgElements.litter.push({
+                    x: 100 + rng() * (LEVEL_WIDTH - 200),
+                    y: 508 + rng() * 10,
+                    type: litterTypes[Math.floor(rng() * litterTypes.length)],
+                    color: `hsl(${rng() * 360}, ${40 + rng() * 40}%, ${30 + rng() * 30}%)`,
+                    rotation: rng() * Math.PI * 2,
+                    size: 4 + rng() * 8
+                });
+            }
+
+            // Homeless people sitting/lying against walls
+            const homelessSpots = [320, 900, 1500, 2400, 3200, 3600];
+            for (let spot of homelessSpots) {
+                if (rng() > 0.35) {
+                    bgElements.homeless.push({
+                        x: spot + rng() * 60,
+                        y: 520,
+                        sitting: rng() > 0.4,
+                        hasCart: rng() > 0.5,
+                        hasBlanket: rng() > 0.3,
+                        blanketColor: `hsl(${rng() * 60 + 20}, ${20 + rng() * 30}%, ${25 + rng() * 20}%)`,
+                        hatColor: `hsl(${rng() * 360}, ${30}%, ${30}%)`,
+                        skinTone: rng() > 0.5 ? '#c8a882' : '#a07858',
+                        hasSign: rng() > 0.5,
+                        signText: rng() > 0.5 ? 'HUNGRY' : 'HELP',
+                        hasBottle: rng() > 0.6,
+                        zzz: rng() > 0.5
+                    });
+                }
+            }
+
+            // Overflowing trash cans
+            for (let i = 0; i < 8; i++) {
+                bgElements.trashCans.push({
+                    x: 250 + rng() * (LEVEL_WIDTH - 500),
+                    tipped: rng() > 0.5,
+                    overflowing: rng() > 0.3,
+                    trashPieces: Math.floor(rng() * 5) + 1
+                });
+            }
+
+            // Puddles (oil / water)
+            for (let i = 0; i < 12; i++) {
+                bgElements.puddles.push({
+                    x: 150 + rng() * (LEVEL_WIDTH - 300),
+                    w: 30 + rng() * 60,
+                    h: 6 + rng() * 8,
+                    oily: rng() > 0.5
+                });
+            }
+
+            // Ground cracks
+            for (let i = 0; i < 20; i++) {
+                const cx = 100 + rng() * (LEVEL_WIDTH - 200);
+                const branches = [];
+                for (let b = 0; b < 2 + Math.floor(rng() * 4); b++) {
+                    branches.push({
+                        dx: (rng() - 0.5) * 60,
+                        dy: rng() * 20 - 5,
+                    });
+                }
+                bgElements.cracks.push({ x: cx, branches });
+            }
+
+            // Torn posters on walls (mid-ground)
+            const posterColors = ['#ff3366', '#3366ff', '#ffcc00', '#66ff66', '#ff6600'];
+            for (let i = 0; i < 10; i++) {
+                bgElements.posters.push({
+                    x: 200 + rng() * (LEVEL_WIDTH - 400),
+                    y: 360 + rng() * 100,
+                    w: 30 + rng() * 40,
+                    h: 35 + rng() * 50,
+                    color: posterColors[Math.floor(rng() * posterColors.length)],
+                    torn: rng() > 0.3,
+                    tornAmount: rng() * 0.4 + 0.1
+                });
+            }
+
+            // Chain-link fence sections
+            bgElements.fences.push({ x: 100, w: 400 });
+            bgElements.fences.push({ x: 1800, w: 300 });
+            bgElements.fences.push({ x: 3000, w: 500 });
+
+            // Grass blades (individual tall ones along edges)
+            for (let i = 0; i < 300; i++) {
+                const gx = rng() * LEVEL_WIDTH;
+                // Grass grows along edges of the path and in patches
+                const distFromCenter = Math.abs((gx % 400) - 200) / 200; // 0 at edges, 1 at center
+                if (rng() < 0.3 + distFromCenter * 0.5) {
+                    bgElements.grassBlades.push({
+                        x: gx,
+                        h: 8 + rng() * 20,
+                        lean: (rng() - 0.5) * 0.6,
+                        shade: rng(),
+                        thick: 1 + rng() * 2
+                    });
+                }
+            }
+
+            // Grass patches (clumps of dense grass)
+            for (let i = 0; i < 40; i++) {
+                bgElements.grassPatches.push({
+                    x: rng() * LEVEL_WIDTH,
+                    w: 20 + rng() * 60,
+                    density: 0.4 + rng() * 0.6,
+                    shade: rng()
+                });
+            }
+
+            // Dirt/mud patches on the path
+            for (let i = 0; i < 18; i++) {
+                bgElements.dirtPatches.push({
+                    x: rng() * LEVEL_WIDTH,
+                    w: 15 + rng() * 50,
+                    h: 4 + rng() * 8,
+                    dark: rng() > 0.5
+                });
+            }
+
+            // Pebbles and small rocks
+            for (let i = 0; i < 80; i++) {
+                bgElements.pebbles.push({
+                    x: rng() * LEVEL_WIDTH,
+                    y: 522 + rng() * 6,
+                    r: 1.5 + rng() * 3,
+                    shade: 0.2 + rng() * 0.3
+                });
+            }
+        }
+
+        generateBackgroundElements();
+
+        // === GROUND RENDERING ===
+        function drawGround() {
+            const groundY = level.groundY; // 520
+
+            // === DIRT / EARTH BASE LAYER ===
+            const earthGrad = ctx.createLinearGradient(0, groundY, 0, canvas.height);
+            earthGrad.addColorStop(0, '#3a2a15');
+            earthGrad.addColorStop(0.15, '#2a1c0e');
+            earthGrad.addColorStop(0.5, '#1a120a');
+            earthGrad.addColorStop(1, '#0d0805');
+            ctx.fillStyle = earthGrad;
+            ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+            // === GRASS LAYER (top of ground) ===
+            // Grass base strip
+            const grassGrad = ctx.createLinearGradient(0, groundY - 6, 0, groundY + 14);
+            grassGrad.addColorStop(0, '#1a4a12');
+            grassGrad.addColorStop(0.3, '#245518');
+            grassGrad.addColorStop(0.7, '#1d3a14');
+            grassGrad.addColorStop(1, '#2a1c0e');
+            ctx.fillStyle = grassGrad;
+            ctx.fillRect(0, groundY - 4, canvas.width, 18);
+
+            // Grass patches (dense clumps)
+            for (let gp of bgElements.grassPatches) {
+                const gpx = gp.x - cameraX;
+                if (gpx + gp.w < -10 || gpx > canvas.width + 10) continue;
+
+                const g = gp.shade;
+                const r = Math.floor(20 + g * 20);
+                const gr = Math.floor(60 + g * 40);
+                const b = Math.floor(10 + g * 15);
+                ctx.fillStyle = `rgba(${r}, ${gr}, ${b}, ${gp.density * 0.7})`;
+                ctx.beginPath();
+                ctx.ellipse(gpx + gp.w / 2, groundY + 2, gp.w / 2, 6, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // === WORN DIRT PATH (winding through the middle) ===
+            ctx.save();
+            ctx.beginPath();
+            // Path follows a gentle sine wave across the level
+            const pathW = 70;
+            let first = true;
+            for (let wx = -20; wx < canvas.width + 40; wx += 8) {
+                const worldX = wx + cameraX;
+                const pathOffset = Math.sin(worldX / 500) * 25 + Math.sin(worldX / 200) * 10;
+                const py = groundY + 4 + pathOffset * 0.15;
+                if (first) {
+                    ctx.moveTo(wx, py - pathW * 0.1);
+                    first = false;
+                } else {
+                    ctx.lineTo(wx, py - pathW * 0.1);
+                }
+            }
+            for (let wx = canvas.width + 40; wx >= -20; wx -= 8) {
+                const worldX = wx + cameraX;
+                const pathOffset = Math.sin(worldX / 500) * 25 + Math.sin(worldX / 200) * 10;
+                const py = groundY + 4 + pathOffset * 0.15;
+                ctx.lineTo(wx, py + pathW * 0.12);
+            }
+            ctx.closePath();
+
+            // Path fill — worn dirt
+            const pathGrad = ctx.createLinearGradient(0, groundY - 2, 0, groundY + 16);
+            pathGrad.addColorStop(0, '#4a3820');
+            pathGrad.addColorStop(0.5, '#3d2e18');
+            pathGrad.addColorStop(1, '#342816');
+            ctx.fillStyle = pathGrad;
+            ctx.fill();
+
+            // Path edges — darker worn edges
+            ctx.strokeStyle = 'rgba(30, 20, 10, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+
+            // Dirt patches on path
+            for (let dp of bgElements.dirtPatches) {
+                const dpx = dp.x - cameraX;
+                if (dpx + dp.w < -10 || dpx > canvas.width + 10) continue;
+
+                ctx.fillStyle = dp.dark ? 'rgba(20, 14, 8, 0.4)' : 'rgba(60, 45, 25, 0.3)';
+                ctx.beginPath();
+                ctx.ellipse(dpx + dp.w / 2, groundY + 5, dp.w / 2, dp.h / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Pebbles
+            for (let pb of bgElements.pebbles) {
+                const pbx = pb.x - cameraX;
+                if (pbx < -10 || pbx > canvas.width + 10) continue;
+
+                const s = pb.shade;
+                ctx.fillStyle = `rgb(${Math.floor(80 * s)}, ${Math.floor(70 * s)}, ${Math.floor(60 * s)})`;
+                ctx.beginPath();
+                ctx.arc(pbx, pb.y, pb.r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // === INDIVIDUAL GRASS BLADES ===
+            const windTime = Date.now() / 1000;
+            for (let gb of bgElements.grassBlades) {
+                const gbx = gb.x - cameraX;
+                if (gbx < -20 || gbx > canvas.width + 20) continue;
+
+                const wind = Math.sin(windTime * 1.5 + gb.x * 0.01) * 0.15;
+                const s = gb.shade;
+                const r = Math.floor(15 + s * 30);
+                const g = Math.floor(50 + s * 50);
+                const b = Math.floor(8 + s * 20);
+                ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+                ctx.lineWidth = gb.thick;
+
+                ctx.beginPath();
+                ctx.moveTo(gbx, groundY - 1);
+                ctx.quadraticCurveTo(
+                    gbx + (gb.lean + wind) * gb.h,
+                    groundY - gb.h * 0.6,
+                    gbx + (gb.lean + wind) * gb.h * 1.5,
+                    groundY - gb.h
+                );
+                ctx.stroke();
+            }
+
+            // === GRASS TUFTS along path edges (small repeated clusters) ===
+            for (let tx = 0; tx < canvas.width + 20; tx += 14) {
+                const worldTx = tx + cameraX;
+                const pathOffset = Math.sin(worldTx / 500) * 25 + Math.sin(worldTx / 200) * 10;
+
+                // Top edge tufts
+                const topY = groundY + 2 + pathOffset * 0.15 - 5;
+                const bottomY = groundY + 4 + pathOffset * 0.15 + 6;
+
+                // Use worldX for deterministic placement
+                const hash = (worldTx * 7 + 13) % 17;
+                if (hash > 6) {
+                    const tH = 4 + (hash % 5);
+                    const tWind = Math.sin(windTime * 1.2 + worldTx * 0.02) * 0.1;
+                    ctx.strokeStyle = hash > 11 ? '#2a6618' : '#1d4a12';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.moveTo(tx, topY);
+                    ctx.quadraticCurveTo(tx + tWind * tH * 3, topY - tH * 0.6, tx + tWind * tH * 5, topY - tH);
+                    ctx.stroke();
+
+                    ctx.beginPath();
+                    ctx.moveTo(tx, bottomY);
+                    ctx.quadraticCurveTo(tx - tWind * tH * 2, bottomY - tH * 0.5, tx - tWind * tH * 4, bottomY - tH * 0.8);
+                    ctx.stroke();
+                }
+            }
+
+            // === GROUND TEXTURE — subtle noise overlay ===
+            ctx.globalAlpha = 0.06;
+            ctx.fillStyle = '#000';
+            for (let nx = 0; nx < canvas.width; nx += 12) {
+                for (let ny = groundY; ny < groundY + 40; ny += 12) {
+                    const worldNx = nx + cameraX;
+                    const noiseVal = ((worldNx * 31 + ny * 17) % 100) / 100;
+                    if (noiseVal > 0.5) {
+                        ctx.fillRect(nx, ny, 6, 6);
+                    }
+                }
+            }
+            ctx.globalAlpha = 1;
+        }
+
         function drawBackground() {
-            // Sky gradient
+            // Dark gritty sky gradient
             const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-            grad.addColorStop(0, '#330066');
-            grad.addColorStop(1, '#ff99ff');
+            grad.addColorStop(0, '#0d0015');
+            grad.addColorStop(0.3, '#1a0033');
+            grad.addColorStop(0.7, '#2a1040');
+            grad.addColorStop(1, '#1a0a20');
             ctx.fillStyle = grad;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Parallax clouds / buildings
-            ctx.fillStyle = '#ff66cc';
-            ctx.globalAlpha = 0.3;
-            for (let i = 0; i < 8; i++) {
-                const x = ((i * 220) - (cameraX * 0.2) % 1760);
-                ctx.fillRect(x, 140, 120, 60);
-            }
-            ctx.globalAlpha = 1;
+            // Smoggy haze
+            ctx.fillStyle = 'rgba(80, 40, 60, 0.15)';
+            ctx.fillRect(0, 100, canvas.width, 300);
 
-            // Playground elements (static)
-            // Jungle gym
-            ctx.strokeStyle = '#00ffff';
+            // === FAR PARALLAX: City skyline ===
+            const farP = 0.15;
+            for (let b of bgElements.buildings) {
+                const bx = b.x - cameraX * farP;
+                if (bx + b.w < -100 || bx > canvas.width + 100) continue;
+
+                // Building body
+                ctx.fillStyle = b.color;
+                ctx.fillRect(bx, 520 - b.h, b.w, b.h);
+
+                // Windows (dim yellow dots)
+                ctx.fillStyle = 'rgba(255, 200, 50, 0.3)';
+                const wSpacing = b.w / (b.windows + 1);
+                const rowH = b.h / (b.windowRows + 1);
+                for (let wy = 1; wy <= b.windowRows; wy++) {
+                    for (let wx = 1; wx <= b.windows; wx++) {
+                        ctx.fillRect(bx + wx * wSpacing - 3, 520 - b.h + wy * rowH - 3, 6, 6);
+                    }
+                }
+
+                // Antenna
+                if (b.hasAntenna) {
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(bx + b.w * 0.5, 520 - b.h);
+                    ctx.lineTo(bx + b.w * 0.5, 520 - b.h - 30);
+                    ctx.stroke();
+                    ctx.fillStyle = '#ff0000';
+                    ctx.fillRect(bx + b.w * 0.5 - 2, 520 - b.h - 32, 4, 4);
+                }
+
+                // Water tower
+                if (b.hasWaterTower) {
+                    ctx.fillStyle = '#1a1a1a';
+                    // legs
+                    ctx.fillRect(bx + b.w * 0.3, 520 - b.h - 20, 3, 20);
+                    ctx.fillRect(bx + b.w * 0.6, 520 - b.h - 20, 3, 20);
+                    // tank
+                    ctx.fillRect(bx + b.w * 0.2, 520 - b.h - 35, b.w * 0.5, 16);
+                }
+            }
+
+            // === HALDEN LANDMARKS (far parallax silhouettes) ===
+            const landmarkP = 0.1;
+            ctx.save();
+
+            // --- Fredriksten Fortress silhouette (on a hill, left side) ---
+            const fX = 600 - cameraX * landmarkP;
+            ctx.fillStyle = '#0d0018';
+            ctx.globalAlpha = 0.7;
+
+            // Hill / mountain the fortress sits on
+            ctx.beginPath();
+            ctx.moveTo(fX - 200, 520);
+            ctx.lineTo(fX - 160, 340);
+            ctx.lineTo(fX - 100, 290);
+            ctx.lineTo(fX - 40, 260);
+            ctx.lineTo(fX + 40, 240);
+            ctx.lineTo(fX + 120, 245);
+            ctx.lineTo(fX + 200, 270);
+            ctx.lineTo(fX + 260, 310);
+            ctx.lineTo(fX + 320, 360);
+            ctx.lineTo(fX + 360, 520);
+            ctx.fill();
+
+            // Fortress walls (star-fort angular walls)
+            ctx.fillStyle = '#120020';
+            // Main keep / tower
+            ctx.fillRect(fX - 20, 180, 50, 62);
+            // Keep roof (pointed)
+            ctx.beginPath();
+            ctx.moveTo(fX - 25, 180);
+            ctx.lineTo(fX + 5, 150);
+            ctx.lineTo(fX + 35, 180);
+            ctx.fill();
+            // Flag on top
+            ctx.fillStyle = '#330044';
+            ctx.fillRect(fX + 3, 120, 3, 32);
+            ctx.fillRect(fX + 6, 122, 16, 10);
+
+            // Outer fortress walls with bastions
+            ctx.fillStyle = '#120020';
+            // Left wall section
+            ctx.beginPath();
+            ctx.moveTo(fX - 100, 290);
+            ctx.lineTo(fX - 100, 250);
+            ctx.lineTo(fX - 80, 240);
+            ctx.lineTo(fX - 80, 230);  // bastion point
+            ctx.lineTo(fX - 60, 225);
+            ctx.lineTo(fX - 40, 230);
+            ctx.lineTo(fX - 40, 242);
+            ctx.lineTo(fX - 20, 242);
+            ctx.lineTo(fX - 20, 290);
+            ctx.fill();
+
+            // Right wall section
+            ctx.beginPath();
+            ctx.moveTo(fX + 30, 242);
+            ctx.lineTo(fX + 50, 242);
+            ctx.lineTo(fX + 50, 230);
+            ctx.lineTo(fX + 70, 222);  // bastion point
+            ctx.lineTo(fX + 90, 225);
+            ctx.lineTo(fX + 110, 235);
+            ctx.lineTo(fX + 110, 250);
+            ctx.lineTo(fX + 120, 260);
+            ctx.lineTo(fX + 120, 300);
+            ctx.lineTo(fX + 30, 290);
+            ctx.fill();
+
+            // Lower curtain wall (front face)
+            ctx.fillStyle = '#100018';
+            ctx.beginPath();
+            ctx.moveTo(fX - 120, 310);
+            ctx.lineTo(fX - 120, 280);
+            ctx.lineTo(fX - 90, 270);
+            ctx.lineTo(fX - 70, 275);  // bastion notch
+            ctx.lineTo(fX - 50, 265);
+            ctx.lineTo(fX + 60, 260);
+            ctx.lineTo(fX + 80, 265);
+            ctx.lineTo(fX + 100, 260);  // bastion notch
+            ctx.lineTo(fX + 130, 275);
+            ctx.lineTo(fX + 140, 320);
+            ctx.fill();
+
+            // Small tower on the right
+            ctx.fillStyle = '#120020';
+            ctx.fillRect(fX + 100, 220, 20, 40);
+            ctx.beginPath();
+            ctx.moveTo(fX + 98, 220);
+            ctx.lineTo(fX + 110, 208);
+            ctx.lineTo(fX + 122, 220);
+            ctx.fill();
+
+            // --- Nexans Tower silhouette (tall industrial chimney, right side) ---
+            const nX = 2800 - cameraX * landmarkP;
+
+            // The tall tower/chimney
+            ctx.fillStyle = '#0d0018';
+            ctx.globalAlpha = 0.65;
+
+            // Main tower shaft (tall and narrow)
+            ctx.fillRect(nX - 12, 120, 24, 400);
+
+            // Slight taper at top
+            ctx.beginPath();
+            ctx.moveTo(nX - 14, 140);
+            ctx.lineTo(nX - 10, 100);
+            ctx.lineTo(nX + 10, 100);
+            ctx.lineTo(nX + 14, 140);
+            ctx.fill();
+
+            // Top cap / observation platform
+            ctx.fillRect(nX - 20, 100, 40, 12);
+            ctx.fillRect(nX - 16, 90, 32, 12);
+
+            // Ring details on the shaft
+            ctx.fillStyle = '#150024';
+            ctx.fillRect(nX - 15, 200, 30, 5);
+            ctx.fillRect(nX - 15, 300, 30, 5);
+            ctx.fillRect(nX - 15, 400, 30, 5);
+
+            // Base / factory building around the tower
+            ctx.fillStyle = '#0d0018';
+            ctx.globalAlpha = 0.5;
+            ctx.fillRect(nX - 80, 420, 160, 100);
+            ctx.fillRect(nX - 100, 450, 200, 70);
+
+            // Factory roof angles
+            ctx.beginPath();
+            ctx.moveTo(nX - 100, 450);
+            ctx.lineTo(nX - 80, 420);
+            ctx.lineTo(nX - 40, 410);
+            ctx.lineTo(nX, 420);
+            ctx.lineTo(nX + 40, 410);
+            ctx.lineTo(nX + 80, 420);
+            ctx.lineTo(nX + 100, 450);
+            ctx.fill();
+
+            // Small factory windows
+            ctx.fillStyle = 'rgba(255, 200, 50, 0.08)';
+            for (let fy = 0; fy < 2; fy++) {
+                for (let fx = 0; fx < 5; fx++) {
+                    ctx.fillRect(nX - 70 + fx * 30, 460 + fy * 25, 12, 10);
+                }
+            }
+
+            // Smoke wisps from the tower top
+            ctx.globalAlpha = 0.12;
+            ctx.fillStyle = '#442266';
+            const smokeT = Date.now() / 2000;
+            for (let s = 0; s < 4; s++) {
+                const sx = nX + Math.sin(smokeT + s * 1.5) * (15 + s * 10);
+                const sy = 80 - s * 25;
+                const sr = 12 + s * 10;
+                ctx.beginPath();
+                ctx.ellipse(sx, sy, sr, sr * 0.6, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.globalAlpha = 1;
+            ctx.restore();
+
+            // === MID PARALLAX: Background wall / fence texture ===
+            const midP = 0.4;
+
+            // Concrete wall strip behind playground
+            ctx.fillStyle = '#1a1520';
+            ctx.fillRect(0, 340, canvas.width, 180);
+
+            // Wall stains
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+            for (let i = 0; i < 6; i++) {
+                const sx = (i * 300 - cameraX * midP) % (canvas.width + 200);
+                ctx.beginPath();
+                ctx.ellipse(sx, 420, 40 + i * 8, 60, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Torn posters on the wall
+            for (let p of bgElements.posters) {
+                const px = p.x - cameraX * midP;
+                if (px + p.w < -50 || px > canvas.width + 50) continue;
+
+                ctx.fillStyle = p.color;
+                if (p.torn) {
+                    ctx.fillRect(px, p.y, p.w, p.h * (1 - p.tornAmount));
+                    // torn edge
+                    ctx.fillStyle = p.color;
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillRect(px + 2, p.y + p.h * (1 - p.tornAmount), p.w * 0.6, p.h * p.tornAmount * 0.5);
+                    ctx.globalAlpha = 1;
+                } else {
+                    ctx.fillRect(px, p.y, p.w, p.h);
+                }
+
+                // Poster text placeholder (lines)
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                for (let l = 0; l < 3; l++) {
+                    ctx.fillRect(px + 4, p.y + 6 + l * 8, p.w - 8, 3);
+                }
+            }
+
+            // Chain-link fences
+            for (let f of bgElements.fences) {
+                const fx = f.x - cameraX * midP;
+                if (fx + f.w < -50 || fx > canvas.width + 50) continue;
+
+                ctx.strokeStyle = 'rgba(100, 100, 120, 0.4)';
+                ctx.lineWidth = 1;
+                // Diamond pattern
+                const spacing = 12;
+                for (let dy = 340; dy < 520; dy += spacing) {
+                    for (let dx = fx; dx < fx + f.w; dx += spacing) {
+                        ctx.beginPath();
+                        ctx.moveTo(dx, dy);
+                        ctx.lineTo(dx + spacing / 2, dy + spacing / 2);
+                        ctx.lineTo(dx + spacing, dy);
+                        ctx.stroke();
+                    }
+                }
+
+                // Fence posts
+                ctx.fillStyle = '#444';
+                for (let fp = fx; fp < fx + f.w; fp += 80) {
+                    ctx.fillRect(fp, 330, 6, 190);
+                }
+            }
+
+            // Graffiti tags
+            for (let g of bgElements.graffiti) {
+                const gx = g.x - cameraX * (g.onGround ? 1 : midP);
+                if (gx < -100 || gx > canvas.width + 100) continue;
+
+                ctx.save();
+                ctx.translate(gx, g.onGround ? 515 : g.y);
+                ctx.rotate(g.rotation);
+                ctx.font = `bold ${g.size}px 'Press Start 2P', monospace`;
+                ctx.fillStyle = g.color;
+                ctx.globalAlpha = g.onGround ? 0.06 : 0.12;
+                ctx.fillText(g.text, 0, 0);
+
+                // Spray drip effect
+                if (!g.onGround && g.size > 20) {
+                    ctx.fillStyle = g.color;
+                    ctx.globalAlpha = 0.06;
+                    for (let d = 0; d < 3; d++) {
+                        const dripX = d * g.size * 0.4;
+                        ctx.fillRect(dripX, 4, 3, 8 + d * 6);
+                    }
+                }
+                ctx.globalAlpha = 1;
+                ctx.restore();
+            }
+
+            // === FOREGROUND PARALLAX (moves with level) ===
+
+            // Ground cracks
+            ctx.strokeStyle = 'rgba(40, 20, 30, 0.6)';
+            ctx.lineWidth = 2;
+            for (let c of bgElements.cracks) {
+                const cx = c.x - cameraX;
+                if (cx < -80 || cx > canvas.width + 80) continue;
+                for (let branch of c.branches) {
+                    ctx.beginPath();
+                    ctx.moveTo(cx, 522);
+                    ctx.lineTo(cx + branch.dx, 522 + branch.dy);
+                    ctx.stroke();
+                }
+            }
+
+            // Puddles
+            for (let p of bgElements.puddles) {
+                const px = p.x - cameraX;
+                if (px + p.w < -10 || px > canvas.width + 10) continue;
+
+                if (p.oily) {
+                    // Oil rainbow puddle
+                    const oilGrad = ctx.createLinearGradient(px, 0, px + p.w, 0);
+                    oilGrad.addColorStop(0, 'rgba(80, 0, 120, 0.4)');
+                    oilGrad.addColorStop(0.3, 'rgba(0, 80, 120, 0.3)');
+                    oilGrad.addColorStop(0.6, 'rgba(120, 80, 0, 0.3)');
+                    oilGrad.addColorStop(1, 'rgba(80, 0, 80, 0.4)');
+                    ctx.fillStyle = oilGrad;
+                } else {
+                    ctx.fillStyle = 'rgba(30, 20, 50, 0.5)';
+                }
+                ctx.beginPath();
+                ctx.ellipse(px + p.w / 2, 522, p.w / 2, p.h / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Trash cans
+            for (let t of bgElements.trashCans) {
+                const tx = t.x - cameraX;
+                if (tx < -60 || tx > canvas.width + 60) continue;
+
+                if (t.tipped) {
+                    // Tipped over trash can
+                    ctx.fillStyle = '#555';
+                    ctx.save();
+                    ctx.translate(tx, 510);
+                    ctx.rotate(1.3);
+                    ctx.fillRect(-12, -20, 24, 36);
+                    ctx.restore();
+                    // Spilled trash
+                    ctx.fillStyle = '#3a3a2a';
+                    ctx.fillRect(tx + 10, 510, 30, 8);
+                    ctx.fillStyle = '#886633';
+                    ctx.fillRect(tx + 15, 506, 12, 6);
+                    ctx.fillStyle = '#448844';
+                    ctx.fillRect(tx + 30, 508, 8, 8);
+                } else {
+                    // Standing trash can
+                    ctx.fillStyle = '#555';
+                    ctx.fillRect(tx - 14, 484, 28, 36);
+                    ctx.fillStyle = '#666';
+                    ctx.fillRect(tx - 16, 480, 32, 8);
+
+                    if (t.overflowing) {
+                        // Trash poking out the top
+                        ctx.fillStyle = '#886633';
+                        ctx.fillRect(tx - 8, 472, 16, 12);
+                        ctx.fillStyle = '#448844';
+                        ctx.fillRect(tx - 4, 468, 10, 8);
+                        ctx.fillStyle = '#cc9933';
+                        ctx.fillRect(tx + 6, 474, 8, 6);
+                    }
+                }
+            }
+
+            // Litter on the ground
+            for (let l of bgElements.litter) {
+                const lx = l.x - cameraX;
+                if (lx < -20 || lx > canvas.width + 20) continue;
+
+                ctx.save();
+                ctx.translate(lx, l.y);
+                ctx.rotate(l.rotation);
+                ctx.globalAlpha = 0.7;
+
+                if (l.type === 'can') {
+                    ctx.fillStyle = '#cc3333';
+                    ctx.fillRect(-5, -3, 10, 6);
+                    ctx.fillStyle = '#999';
+                    ctx.fillRect(-5, -3, 10, 2);
+                } else if (l.type === 'bottle') {
+                    ctx.fillStyle = 'rgba(100, 200, 100, 0.5)';
+                    ctx.fillRect(-3, -6, 6, 12);
+                    ctx.fillRect(-1, -9, 2, 4);
+                } else if (l.type === 'bag') {
+                    ctx.fillStyle = '#ddd';
+                    ctx.beginPath();
+                    ctx.ellipse(0, 0, 8, 5, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (l.type === 'paper') {
+                    ctx.fillStyle = '#eeddcc';
+                    ctx.fillRect(-6, -4, 12, 8);
+                } else if (l.type === 'cigarette') {
+                    ctx.fillStyle = '#eee';
+                    ctx.fillRect(-6, -1, 10, 2);
+                    ctx.fillStyle = '#cc8833';
+                    ctx.fillRect(-6, -1, 3, 2);
+                } else if (l.type === 'wrapper') {
+                    ctx.fillStyle = l.color;
+                    ctx.fillRect(-5, -3, 10, 6);
+                } else if (l.type === 'needle') {
+                    ctx.strokeStyle = '#aaa';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(-6, 0);
+                    ctx.lineTo(6, 0);
+                    ctx.stroke();
+                    ctx.fillStyle = '#ff6600';
+                    ctx.fillRect(-8, -2, 4, 4);
+                }
+
+                ctx.globalAlpha = 1;
+                ctx.restore();
+            }
+
+            // Homeless people
+            for (let h of bgElements.homeless) {
+                const hx = h.x - cameraX;
+                if (hx < -80 || hx > canvas.width + 80) continue;
+
+                ctx.save();
+                ctx.translate(hx, h.y);
+
+                if (h.sitting) {
+                    // Sitting against wall
+                    // Body
+                    ctx.fillStyle = '#3a3028';
+                    ctx.fillRect(-12, -50, 24, 40);
+                    // Legs out
+                    ctx.fillStyle = '#2a2820';
+                    ctx.fillRect(-8, -14, 36, 12);
+                    // Head
+                    ctx.fillStyle = h.skinTone;
+                    ctx.beginPath();
+                    ctx.arc(0, -58, 12, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Beanie/hat
+                    ctx.fillStyle = h.hatColor;
+                    ctx.fillRect(-13, -72, 26, 14);
+
+                    // Blanket
+                    if (h.hasBlanket) {
+                        ctx.fillStyle = h.blanketColor;
+                        ctx.fillRect(-16, -30, 40, 22);
+                    }
+
+                    // Cardboard sign
+                    if (h.hasSign) {
+                        ctx.fillStyle = '#8B7355';
+                        ctx.fillRect(20, -35, 40, 25);
+                        ctx.fillStyle = '#222';
+                        ctx.font = '6px monospace';
+                        ctx.fillText(h.signText, 23, -18);
+                    }
+
+                    // Bottle next to them
+                    if (h.hasBottle) {
+                        ctx.fillStyle = '#553311';
+                        ctx.fillRect(30, -12, 5, 12);
+                        ctx.fillRect(31, -16, 3, 5);
+                    }
+
+                    // ZZZ if sleeping
+                    if (h.zzz) {
+                        ctx.fillStyle = '#aaaaff';
+                        ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 800) * 0.3;
+                        ctx.font = '10px Press Start 2P';
+                        ctx.fillText('z', 10, -72);
+                        ctx.font = '14px Press Start 2P';
+                        ctx.fillText('z', 20, -82);
+                        ctx.font = '18px Press Start 2P';
+                        ctx.fillText('z', 32, -94);
+                        ctx.globalAlpha = 1;
+                    }
+                } else {
+                    // Lying down
+                    ctx.fillStyle = '#3a3028';
+                    ctx.fillRect(-30, -14, 60, 14);
+                    // Head
+                    ctx.fillStyle = h.skinTone;
+                    ctx.beginPath();
+                    ctx.arc(-30, -14, 10, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Blanket over body
+                    if (h.hasBlanket) {
+                        ctx.fillStyle = h.blanketColor;
+                        ctx.fillRect(-18, -16, 48, 14);
+                    }
+
+                    // ZZZ
+                    if (h.zzz) {
+                        ctx.fillStyle = '#aaaaff';
+                        ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 800) * 0.3;
+                        ctx.font = '10px Press Start 2P';
+                        ctx.fillText('z', -25, -30);
+                        ctx.font = '14px Press Start 2P';
+                        ctx.fillText('z', -15, -42);
+                        ctx.globalAlpha = 1;
+                    }
+                }
+
+                // Shopping cart
+                if (h.hasCart) {
+                    const cartX = h.sitting ? -50 : 40;
+                    ctx.strokeStyle = '#888';
+                    ctx.lineWidth = 2;
+                    // Cart frame
+                    ctx.strokeRect(cartX, -40, 30, 25);
+                    // Wheels
+                    ctx.fillStyle = '#555';
+                    ctx.beginPath();
+                    ctx.arc(cartX + 5, -12, 4, 0, Math.PI * 2);
+                    ctx.arc(cartX + 25, -12, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Stuff in cart
+                    ctx.fillStyle = '#554433';
+                    ctx.fillRect(cartX + 3, -42, 24, 8);
+                    ctx.fillStyle = '#336633';
+                    ctx.fillRect(cartX + 8, -48, 14, 8);
+                }
+
+                ctx.restore();
+            }
+
+            // === Playground elements (static, world-space) ===
+
+            // Jungle gym (rusted)
+            ctx.strokeStyle = '#337777';
             ctx.lineWidth = 14;
             ctx.beginPath();
             ctx.moveTo(620 - cameraX, 380);
             ctx.lineTo(880 - cameraX, 380);
             ctx.moveTo(620 - cameraX, 380);
             ctx.lineTo(620 - cameraX, 520);
+            ctx.moveTo(880 - cameraX, 380);
+            ctx.lineTo(880 - cameraX, 520);
             ctx.stroke();
-
-            // Slide
-            ctx.fillStyle = '#ff00ff';
-            ctx.fillRect(1650 - cameraX, 300, 40, 220);
-            ctx.fillStyle = '#00ffff';
-            ctx.fillRect(1690 - cameraX, 300, 140, 30);
-
-            // Swings (simple)
-            ctx.strokeStyle = '#ffd700';
-            ctx.lineWidth = 6;
+            // Rust spots
+            ctx.fillStyle = 'rgba(139, 69, 19, 0.4)';
+            ctx.fillRect(650 - cameraX, 378, 20, 6);
+            ctx.fillRect(820 - cameraX, 376, 15, 8);
+            // Cross bars
+            ctx.strokeStyle = '#2a6666';
+            ctx.lineWidth = 8;
             ctx.beginPath();
-            ctx.moveTo(1150 - cameraX, 180);
-            ctx.lineTo(1150 - cameraX, 420);
-            ctx.moveTo(1350 - cameraX, 180);
-            ctx.lineTo(1350 - cameraX, 420);
+            ctx.moveTo(620 - cameraX, 420);
+            ctx.lineTo(880 - cameraX, 420);
+            ctx.moveTo(620 - cameraX, 460);
+            ctx.lineTo(880 - cameraX, 460);
             ctx.stroke();
+
+            // Slide (worn, graffitied)
+            ctx.fillStyle = '#882288';
+            ctx.fillRect(1650 - cameraX, 300, 40, 220);
+            ctx.fillStyle = '#557788';
+            ctx.fillRect(1690 - cameraX, 300, 140, 30);
+            // Slide surface (scratched)
+            ctx.fillStyle = '#446677';
+            ctx.beginPath();
+            ctx.moveTo(1690 - cameraX, 330);
+            ctx.lineTo(1830 - cameraX, 520);
+            ctx.lineTo(1690 - cameraX, 520);
+            ctx.fill();
+            // Graffiti on slide support
+            ctx.fillStyle = '#ff00ff';
+            ctx.globalAlpha = 0.5;
+            ctx.font = 'bold 12px monospace';
+            ctx.fillText('SASS', 1655 - cameraX, 400);
+            ctx.globalAlpha = 1;
+
+            // Swings (rusty chains)
+            ctx.strokeStyle = '#887744';
+            ctx.lineWidth = 6;
+            // Top bar
+            ctx.beginPath();
+            ctx.moveTo(1120 - cameraX, 180);
+            ctx.lineTo(1380 - cameraX, 180);
+            ctx.stroke();
+            // Chains with slight sway
+            const swingTime = Date.now() / 1000;
+            const sway1 = Math.sin(swingTime * 1.2) * 8;
+            const sway2 = Math.sin(swingTime * 0.9 + 1) * 10;
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#776633';
+            ctx.beginPath();
+            ctx.moveTo(1180 - cameraX, 180);
+            ctx.lineTo(1180 - cameraX + sway1, 380);
+            ctx.moveTo(1300 - cameraX, 180);
+            ctx.lineTo(1300 - cameraX + sway2, 380);
+            ctx.stroke();
+            // Seats
+            ctx.fillStyle = '#222';
+            ctx.fillRect(1168 - cameraX + sway1, 378, 24, 6);
+            ctx.fillRect(1288 - cameraX + sway2, 378, 24, 6);
+            // One swing broken — chain dangling
+            ctx.strokeStyle = '#554422';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(1240 - cameraX, 180);
+            ctx.lineTo(1245 - cameraX, 280);
+            ctx.stroke();
+
+            // Support poles (rusty)
+            ctx.fillStyle = '#554433';
+            ctx.fillRect(1120 - cameraX, 180, 8, 340);
+            ctx.fillRect(1374 - cameraX, 180, 8, 340);
+
+            // Broken bench near end of level
+            ctx.fillStyle = '#443322';
+            ctx.fillRect(2800 - cameraX, 490, 80, 8);
+            ctx.fillRect(2810 - cameraX, 498, 8, 22);
+            ctx.fillRect(2862 - cameraX, 498, 8, 22);
+            // One slat missing
+            ctx.fillStyle = '#332211';
+            ctx.fillRect(2800 - cameraX, 480, 50, 8);
+
+            // Street lamp (flickering)
+            const lampFlicker = Math.sin(Date.now() / 100) > 0.3 ? 1 : 0.2;
+            for (let lx of [500, 1400, 2500, 3400]) {
+                const lampX = lx - cameraX;
+                if (lampX < -40 || lampX > canvas.width + 40) continue;
+                // Pole
+                ctx.fillStyle = '#333';
+                ctx.fillRect(lampX - 3, 320, 6, 200);
+                // Arm
+                ctx.fillRect(lampX - 3, 320, 30, 4);
+                // Light
+                ctx.fillStyle = `rgba(255, 200, 100, ${0.15 * lampFlicker})`;
+                ctx.beginPath();
+                ctx.moveTo(lampX + 27, 324);
+                ctx.lineTo(lampX - 30, 520);
+                ctx.lineTo(lampX + 84, 520);
+                ctx.fill();
+                // Bulb
+                ctx.fillStyle = `rgba(255, 220, 120, ${0.8 * lampFlicker})`;
+                ctx.fillRect(lampX + 22, 322, 10, 8);
+            }
+        }
+
+        function drawVictimHair(style, color, headW, headCY) {
+            // headCY = head center Y position. Hair draws relative to it.
+            ctx.fillStyle = color;
+            if (style === 'buzz') {
+                ctx.beginPath();
+                ctx.ellipse(0, headCY - 8, headW * 0.9, 8, 0, Math.PI, Math.PI * 2);
+                ctx.fill();
+            } else if (style === 'curly') {
+                for (let i = -3; i <= 3; i++) {
+                    ctx.beginPath();
+                    ctx.arc(i * 4, headCY - 10, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            } else if (style === 'ponytail') {
+                ctx.beginPath();
+                ctx.ellipse(0, headCY - 8, headW * 0.8, 10, 0, Math.PI, Math.PI * 2);
+                ctx.fill();
+                // Tail
+                ctx.beginPath();
+                ctx.moveTo(10, headCY - 6);
+                ctx.quadraticCurveTo(24, headCY, 20, headCY + 16);
+                ctx.lineWidth = 5;
+                ctx.strokeStyle = color;
+                ctx.stroke();
+            } else if (style === 'bowl') {
+                ctx.beginPath();
+                ctx.ellipse(0, headCY - 4, headW * 1.1, 14, 0, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (style === 'mohawk') {
+                ctx.fillRect(-3, headCY - 22, 6, 20);
+                ctx.fillRect(-2, headCY - 26, 4, 6);
+            } else if (style === 'long') {
+                ctx.beginPath();
+                ctx.ellipse(0, headCY - 4, headW * 1.05, 16, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // Long sides
+                ctx.fillRect(-headW - 2, headCY - 2, 6, 24);
+                ctx.fillRect(headW - 4, headCY - 2, 6, 24);
+            } else if (style === 'afro') {
+                ctx.beginPath();
+                ctx.arc(0, headCY - 6, 20, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // 'bald' = no hair drawn
         }
 
         function drawVictims() {
@@ -627,48 +2138,276 @@
                 const sx = v.x - cameraX;
                 if (sx < -100 || sx > canvas.width + 100) continue;
 
+                const wb = Math.sin(Date.now() / 400 + v.animationOffset) * 1.5;
+                const isKid = v.type === 'kid';
+                const scale = isKid ? 1.2 : v.type === 'lunchlady' ? 1.7 : 1.45;
+
                 ctx.save();
                 ctx.translate(sx, v.y);
+                ctx.scale(scale, scale);
 
-                // Different victim art based on type
-                if (v.type === 'kid') {
-                    ctx.fillStyle = '#66ff99';
-                    ctx.fillRect(-20, -60, 40, 55); // body
-                    ctx.fillStyle = '#f5c8a8';
-                    ctx.fillRect(-18, -78, 36, 28); // head
-                    ctx.fillStyle = '#333';
-                    ctx.fillRect(-12, -68, 8, 8); // eyes
-                    ctx.fillRect(4, -68, 8, 8);
-                } else if (v.type === 'teen') {
-                    ctx.fillStyle = '#3366ff';
-                    ctx.fillRect(-24, -70, 48, 70); // jacket
-                    ctx.fillStyle = '#f5c8a8';
-                    ctx.fillRect(-22, -88, 44, 30); // head
-                } else if (v.type === 'nerd') {
-                    ctx.fillStyle = '#ffcc66';
-                    ctx.fillRect(-22, -65, 44, 55);
-                    ctx.fillStyle = '#f5c8a8';
-                    ctx.fillRect(-18, -80, 36, 26);
-                    ctx.fillStyle = '#000';
-                    ctx.fillRect(-14, -72, 28, 4); // glasses
-                } else if (v.type === 'lunchlady') {
-                    ctx.fillStyle = '#ff3366';
-                    ctx.fillRect(-32, -88, 64, 88); // dress
-                    ctx.fillStyle = '#f5c8a8';
-                    ctx.fillRect(-26, -108, 52, 32);
-                }
-
-                // Trauma indicator (sweat drops)
-                if (v.trauma > 30) {
-                    ctx.fillStyle = '#00ffff';
-                    ctx.font = 'bold 28px Arial';
-                    ctx.fillText('💧', -12, -110);
-                }
-
+                // Fainted = tilt over
                 if (v.fainted) {
-                    ctx.fillStyle = '#333';
-                    ctx.font = 'bold 42px Arial';
-                    ctx.fillText('💀', -22, -30);
+                    ctx.rotate(0.3);
+                    ctx.translate(0, 10);
+                }
+
+                // Trauma shake
+                if (v.trauma > 40 && !v.fainted) {
+                    ctx.translate(Math.sin(Date.now() / 30) * (v.trauma / 40), 0);
+                }
+
+                const headW = 14;
+                const isSitting = v.pose === 'sitting_swing' || v.pose === 'sitting_bench';
+
+                // === LEGS ===
+                if (isSitting) {
+                    // Legs bent forward (sitting)
+                    ctx.fillStyle = v.pantsColor;
+                    ctx.fillRect(-10, -10, 8, 10); // upper legs (short, going down)
+                    ctx.fillRect(2, -10, 8, 10);
+                    // Lower legs hanging / forward
+                    ctx.fillStyle = v.pantsColor;
+                    ctx.save();
+                    ctx.translate(-6, 0);
+                    ctx.rotate(0.8);
+                    ctx.fillRect(-4, 0, 8, 12);
+                    ctx.restore();
+                    ctx.save();
+                    ctx.translate(6, 0);
+                    ctx.rotate(0.8);
+                    ctx.fillRect(-4, 0, 8, 12);
+                    ctx.restore();
+                    // Shoes (dangling forward)
+                    ctx.fillStyle = '#222';
+                    ctx.fillRect(2, 8, 12, 5);
+                    ctx.fillRect(14, 8, 12, 5);
+                } else {
+                    // Standing legs
+                    ctx.fillStyle = v.pantsColor;
+                    ctx.fillRect(-10, -14, 8, 14);
+                    ctx.fillRect(2, -14, 8, 14);
+                    // Shoes
+                    ctx.fillStyle = '#222';
+                    ctx.fillRect(-12, -2, 12, 5);
+                    ctx.fillRect(0, -2, 12, 5);
+                }
+
+                // === BODY ===
+                ctx.fillStyle = v.shirtColor;
+                const bodyH = isKid ? 30 : v.type === 'lunchlady' ? 42 : 36;
+                ctx.fillRect(-16, -14 - bodyH, 32, bodyH);
+
+                // Shirt detail
+                if (v.type === 'nerd') {
+                    // Pocket protector
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(4, -14 - bodyH + 6, 8, 10);
+                    ctx.fillStyle = '#3366ff';
+                    ctx.fillRect(6, -14 - bodyH + 7, 2, 8);
+                    ctx.fillStyle = '#ff3333';
+                    ctx.fillRect(9, -14 - bodyH + 8, 2, 6);
+                } else if (v.type === 'teen') {
+                    // Hoodie strings
+                    ctx.strokeStyle = '#ddd';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.moveTo(-3, -14 - bodyH + 4);
+                    ctx.lineTo(-3, -14 - bodyH + 16);
+                    ctx.moveTo(3, -14 - bodyH + 4);
+                    ctx.lineTo(3, -14 - bodyH + 16);
+                    ctx.stroke();
+                } else if (v.type === 'lunchlady') {
+                    // Apron
+                    ctx.fillStyle = '#eee';
+                    ctx.fillRect(-12, -14 - bodyH + 10, 24, bodyH - 10);
+                }
+
+                // === ARMS (hanging at sides) ===
+                const armSwing = Math.sin(Date.now() / 300 + v.animationOffset) * 0.15;
+                ctx.fillStyle = v.skin;
+                // Left arm
+                ctx.save();
+                ctx.translate(-16, -14 - bodyH + 6);
+                ctx.rotate(armSwing);
+                ctx.fillStyle = v.shirtColor;
+                ctx.fillRect(-5, 0, 8, 16);
+                ctx.fillStyle = v.skin;
+                ctx.fillRect(-4, 16, 6, 10);
+                // Hand
+                ctx.beginPath();
+                ctx.arc(-1, 28, 4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+                // Right arm
+                ctx.save();
+                ctx.translate(16, -14 - bodyH + 6);
+                ctx.rotate(-armSwing);
+                ctx.fillStyle = v.shirtColor;
+                ctx.fillRect(-3, 0, 8, 16);
+                ctx.fillStyle = v.skin;
+                ctx.fillRect(-2, 16, 6, 10);
+                ctx.beginPath();
+                ctx.arc(1, 28, 4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                // === HEAD ===
+                const headY = -14 - bodyH - 14;
+                ctx.fillStyle = v.skin;
+                ctx.beginPath();
+                ctx.arc(0, headY + wb, headW, 0, Math.PI * 2);
+                ctx.fill();
+
+                // === HAIR ===
+                drawVictimHair(v.hairStyle, v.hairColor, headW, headY + wb);
+
+                // === FACE ===
+                if (!v.fainted) {
+                    // Eyes
+                    if (v.crying) {
+                        // Crying — squinting eyes
+                        ctx.fillStyle = '#fff';
+                        ctx.beginPath();
+                        ctx.ellipse(-5, headY - 2 + wb, 4, 1.5, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.beginPath();
+                        ctx.ellipse(5, headY - 2 + wb, 4, 1.5, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                        // Tiny pupils
+                        ctx.fillStyle = '#1a0800';
+                        ctx.beginPath();
+                        ctx.arc(-5, headY - 2 + wb, 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(5, headY - 2 + wb, 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                        // Eyebrow scrunch
+                        ctx.strokeStyle = v.hairColor === '#ddd' ? '#999' : v.hairColor;
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(-8, headY - 5 + wb);
+                        ctx.lineTo(-2, headY - 7 + wb);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.moveTo(2, headY - 7 + wb);
+                        ctx.lineTo(8, headY - 5 + wb);
+                        ctx.stroke();
+                    } else {
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath();
+                    ctx.ellipse(-5, headY - 2 + wb, 4, 3, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.ellipse(5, headY - 2 + wb, 4, 3, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Pupils
+                    ctx.fillStyle = '#1a0800';
+                    ctx.beginPath();
+                    ctx.arc(-5, headY - 1 + wb, 2, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(5, headY - 1 + wb, 2, 0, Math.PI * 2);
+                    ctx.fill();
+                    } // end else (not crying) eyes
+
+                    // Eyebrows
+                    ctx.strokeStyle = v.hairColor === '#ddd' ? '#999' : v.hairColor;
+                    ctx.lineWidth = 2;
+                    if (v.trauma > 30) {
+                        // Worried
+                        ctx.beginPath();
+                        ctx.moveTo(-8, headY - 6 + wb);
+                        ctx.lineTo(-2, headY - 8 + wb);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.moveTo(2, headY - 8 + wb);
+                        ctx.lineTo(8, headY - 6 + wb);
+                        ctx.stroke();
+                    } else {
+                        ctx.beginPath();
+                        ctx.moveTo(-8, headY - 7 + wb);
+                        ctx.lineTo(-2, headY - 7 + wb);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.moveTo(2, headY - 7 + wb);
+                        ctx.lineTo(8, headY - 7 + wb);
+                        ctx.stroke();
+                    }
+
+                    // Mouth
+                    ctx.strokeStyle = '#884444';
+                    ctx.lineWidth = 2;
+                    if (v.crying) {
+                        // CRYING — wide open wailing mouth
+                        ctx.fillStyle = '#aa2233';
+                        ctx.beginPath();
+                        ctx.ellipse(0, headY + 6 + wb, 5, 6, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                        // Tears streaming from eyes
+                        ctx.fillStyle = 'rgba(80, 160, 255, 0.8)';
+                        const tearY = Math.sin(Date.now() / 100) * 2;
+                        ctx.fillRect(-6, headY + 1 + wb, 2, 10 + tearY);
+                        ctx.fillRect(5, headY + 1 + wb, 2, 12 + tearY);
+                        // More tears
+                        ctx.fillRect(-4, headY + 3 + wb, 2, 8 + tearY);
+                        ctx.fillRect(3, headY + 2 + wb, 2, 9 + tearY);
+                    } else if (v.trauma > 50) {
+                        // Scared O mouth
+                        ctx.beginPath();
+                        ctx.arc(0, headY + 6 + wb, 3, 0, Math.PI * 2);
+                        ctx.stroke();
+                    } else {
+                        // Neutral
+                        ctx.beginPath();
+                        ctx.moveTo(-4, headY + 5 + wb);
+                        ctx.lineTo(4, headY + 5 + wb);
+                        ctx.stroke();
+                    }
+
+                    // Glasses for nerds
+                    if (v.type === 'nerd') {
+                        ctx.strokeStyle = '#222';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(-9, headY - 5 + wb, 8, 7);
+                        ctx.strokeRect(1, headY - 5 + wb, 8, 7);
+                        ctx.beginPath();
+                        ctx.moveTo(-1, headY - 2 + wb);
+                        ctx.lineTo(1, headY - 2 + wb);
+                        ctx.stroke();
+                    }
+                } else {
+                    // Fainted eyes (X X)
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 2.5;
+                    // Left X
+                    ctx.beginPath();
+                    ctx.moveTo(-8, headY - 4 + wb);
+                    ctx.lineTo(-2, headY + 2 + wb);
+                    ctx.moveTo(-2, headY - 4 + wb);
+                    ctx.lineTo(-8, headY + 2 + wb);
+                    ctx.stroke();
+                    // Right X
+                    ctx.beginPath();
+                    ctx.moveTo(2, headY - 4 + wb);
+                    ctx.lineTo(8, headY + 2 + wb);
+                    ctx.moveTo(8, headY - 4 + wb);
+                    ctx.lineTo(2, headY + 2 + wb);
+                    ctx.stroke();
+                    // Tongue out
+                    ctx.fillStyle = '#cc6666';
+                    ctx.beginPath();
+                    ctx.ellipse(2, headY + 8 + wb, 3, 4, 0.2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Sweat when traumatized
+                if (v.trauma > 30 && !v.fainted) {
+                    ctx.fillStyle = 'rgba(100, 180, 255, 0.7)';
+                    const sweatY = headY - 12 + wb + Math.sin(Date.now() / 200) * 3;
+                    ctx.beginPath();
+                    ctx.ellipse(headW + 2, sweatY, 2.5, 4, 0.3, 0, Math.PI * 2);
+                    ctx.fill();
                 }
 
                 ctx.restore();
@@ -721,11 +2460,71 @@
             }
         }
 
+        // Police siren using Web Audio
+        let sirenCtx = null;
+        let sirenOsc = null;
+        let sirenGain = null;
+        function playSiren() {
+            if (sirenCtx) return; // already playing
+            sirenCtx = new (window.AudioContext || window.webkitAudioContext)();
+            sirenOsc = sirenCtx.createOscillator();
+            sirenGain = sirenCtx.createGain();
+            sirenOsc.type = 'sawtooth';
+            sirenGain.gain.value = 0.25;
+            sirenOsc.connect(sirenGain).connect(sirenCtx.destination);
+            sirenOsc.start();
+            // Sweep frequency up and down for wailing siren
+            function sweepSiren() {
+                if (!sirenCtx) return;
+                const now = sirenCtx.currentTime;
+                sirenOsc.frequency.setValueAtTime(600, now);
+                sirenOsc.frequency.linearRampToValueAtTime(900, now + 0.5);
+                sirenOsc.frequency.linearRampToValueAtTime(600, now + 1.0);
+                setTimeout(sweepSiren, 1000);
+            }
+            sweepSiren();
+        }
+        function stopSiren() {
+            if (sirenCtx) {
+                sirenOsc.stop();
+                sirenCtx.close();
+                sirenCtx = null;
+                sirenOsc = null;
+                sirenGain = null;
+            }
+        }
+
+        // Police light overlay — drawn on canvas during gameover
+        let policeLightInterval = null;
+        function startPoliceLights() {
+            if (policeLightInterval) return;
+            let phase = 0;
+            policeLightInterval = setInterval(() => {
+                phase = (phase + 1) % 2;
+                ctx.globalAlpha = 0.2;
+                ctx.fillStyle = phase === 0 ? '#ff0000' : '#0044ff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.globalAlpha = 1;
+            }, 250);
+        }
+        function stopPoliceLights() {
+            if (policeLightInterval) {
+                clearInterval(policeLightInterval);
+                policeLightInterval = null;
+            }
+        }
+
         function checkGameOver() {
             if (heat >= 100) {
                 gameState = 'gameover';
-                document.getElementById('game-over-screen').style.display = 'flex';
-                document.getElementById('final-score').innerHTML = `YOU ROBBED $<span style="color:#ffff00">${score}</span><br>BUT THE COPS GOT YOU 💅`;
+                playSiren();
+                startPoliceLights();
+                // Delay showing the screen so lights flash first
+                setTimeout(() => {
+                    stopPoliceLights();
+                    document.getElementById('game-over-screen').style.display = 'flex';
+                    document.getElementById('final-score').innerHTML = `YOU ROBBED $<span style="color:#ffff00">${score}</span><br>BUT THE COPS GOT YOU`;
+                }, 2000);
             }
         }
 
@@ -748,10 +2547,30 @@
             if (comboTimer <= 0) combo = Math.max(1, combo - 1);
 
             drawBackground();
-            // Draw platforms
-            ctx.fillStyle = '#00ff88';
+            // Draw ground and platforms
+            drawGround();
+            // Elevated platforms (playground structures)
             for (let p of level.platforms) {
-                ctx.fillRect(p.x - cameraX, p.y, p.w, p.h);
+                if (p.y >= 520) continue; // skip ground platform
+                const ppx = p.x - cameraX;
+                // Platform shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.fillRect(ppx + 4, p.y + 4, p.w, p.h);
+                // Platform body (wood plank look)
+                ctx.fillStyle = '#5a3a1a';
+                ctx.fillRect(ppx, p.y, p.w, p.h);
+                // Plank lines
+                ctx.strokeStyle = '#4a2a10';
+                ctx.lineWidth = 1;
+                for (let lx = ppx + 20; lx < ppx + p.w; lx += 30) {
+                    ctx.beginPath();
+                    ctx.moveTo(lx, p.y);
+                    ctx.lineTo(lx, p.y + p.h);
+                    ctx.stroke();
+                }
+                // Top edge highlight
+                ctx.fillStyle = '#7a5a3a';
+                ctx.fillRect(ppx, p.y, p.w, 3);
             }
 
             drawVictims();
@@ -767,6 +2586,9 @@
 
         function startGame() {
             document.getElementById('start-screen').style.display = 'none';
+            stopSiren();
+            stopPoliceLights();
+            playStartSound();
             gameState = 'playing';
             score = 0;
             heat = 12;
