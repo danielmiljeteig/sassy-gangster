@@ -176,7 +176,7 @@
         let comboTimer = 0;
         let currentLevel = 1;
         let boss = null;
-        const WIN_SCORE = { 1: 250, 2: 300, 3: 0 };
+        const WIN_SCORE = { 1: 150, 2: 300, 3: 0 };
 
         // Player object
         let player = {
@@ -2791,153 +2791,298 @@
             const W = canvas.width;
             const H = canvas.height;
             const groundY = level.groundY;
+            const t = Date.now();
 
-            // Sky gradient — bright blue
+            // ── SKY ───────────────────────────────────────────────────────────────
             const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
-            skyGrad.addColorStop(0, '#3a82b8');
-            skyGrad.addColorStop(1, '#8ec8f0');
+            skyGrad.addColorStop(0,   '#1a5a9a');
+            skyGrad.addColorStop(0.5, '#4a90d0');
+            skyGrad.addColorStop(1,   '#8ec8f0');
             ctx.fillStyle = skyGrad;
             ctx.fillRect(0, 0, W, groundY);
 
-            // Pixel clouds (stepped blocks)
-            for (let cl of bgElements.clouds) {
-                const cx = ((cl.x - camX * 0.1) % (LEVEL_WIDTH + 200)) - 100;
-                if (cx < -200 || cx > W + 200) continue;
-                ctx.fillStyle = '#e8e8e8';
+            // ── CLOUDS (parallax 0.1x) ────────────────────────────────────────────
+            for (const cl of bgElements.clouds) {
+                const wrap = LEVEL_WIDTH + 400;
+                const cx = ((cl.x - camX * 0.1) % wrap + wrap) % wrap - 200;
+                if (cx < -300 || cx > W + 300) continue;
                 const cw = cl.w, cy = cl.y;
+                ctx.fillStyle = '#e0eaf4';
                 ctx.fillRect(cx, cy, cw, 14);
-                ctx.fillRect(cx + cw * 0.15, cy - 10, cw * 0.7, 10);
-                ctx.fillRect(cx + cw * 0.3, cy - 18, cw * 0.4, 8);
-                ctx.fillStyle = '#d0d0d0';
+                ctx.fillRect(cx + Math.floor(cw * 0.15), cy - 10, Math.floor(cw * 0.7), 10);
+                ctx.fillRect(cx + Math.floor(cw * 0.3),  cy - 18, Math.floor(cw * 0.4), 8);
+                ctx.fillStyle = '#c8d8e8';
                 ctx.fillRect(cx, cy + 14, cw, 4);
             }
 
-            // Far urban roofline (parallax 0.15x)
+            // ── FAR URBAN ROOFLINE (parallax 0.15x) ──────────────────────────────
             const r0off = -camX * 0.15;
             const roofBuildings = [
-                {x:0, w:200, h:60}, {x:220, w:150, h:80}, {x:390, w:180, h:50},
-                {x:590, w:220, h:90}, {x:830, w:160, h:65}, {x:1010, w:200, h:70},
+                {x:0,    w:200, h:60}, {x:220,  w:150, h:80}, {x:390,  w:180, h:50},
+                {x:590,  w:220, h:90}, {x:830,  w:160, h:65}, {x:1010, w:200, h:70},
                 {x:1230, w:180, h:55}, {x:1430, w:220, h:85}, {x:1670, w:160, h:60},
+                {x:1860, w:190, h:72}, {x:2080, w:210, h:58}, {x:2310, w:170, h:68},
             ];
-            for (let rb of roofBuildings) {
-                const bx = (rb.x + r0off) % (LEVEL_WIDTH + 400) - 200;
-                ctx.fillStyle = '#707080';
-                ctx.fillRect(bx, groundY - rb.h - 80, rb.w, rb.h + 10);
-                // Windows
-                ctx.fillStyle = 'rgba(180,200,220,0.5)';
+            for (const rb of roofBuildings) {
+                const bx = rb.x + r0off;
+                ctx.fillStyle = '#585868';
+                ctx.fillRect(bx, groundY - rb.h - 90, rb.w, rb.h + 10);
+                ctx.fillStyle = 'rgba(170,195,220,0.35)';
                 for (let wy = 10; wy < rb.h - 10; wy += 20) {
                     for (let wx = 10; wx < rb.w - 10; wx += 22) {
-                        ctx.fillRect(bx + wx, groundY - rb.h - 80 + wy, 10, 12);
+                        ctx.fillRect(bx + wx, groundY - rb.h - 90 + wy, 10, 12);
                     }
                 }
             }
 
-            // Skofabrikken building (parallax 0.3x)
+            // ── SKOFABRIKKEN BUILDING (parallax 0.3x) ────────────────────────────
+            // Wide enough to cover screen at max camera scroll (2520 * 0.3 = 756px shift)
+            const TOTAL_BLD_W = 2450;
             const bldOff = -camX * 0.3;
-            const bldX = bldOff;
-            const bldTop = 60;
-            const bldH = groundY - bldTop - 80;
+            const bldX   = bldOff;
+            const bldTop  = 55;
+            const bldH    = groundY - bldTop - 80;
 
-            // Brick wings
+            const leftWingW  = Math.floor(TOTAL_BLD_W * 0.38);   // ~930px
+            const entrW      = Math.floor(TOTAL_BLD_W * 0.24);   // ~588px
+            const rightWingW = TOTAL_BLD_W - leftWingW - entrW;  // remainder
+            const entrX      = bldX + leftWingW;
+            const rightWingX = entrX + entrW;
+
+            // Per-brick deterministic color variation
+            function brickColor(row, col) {
+                const h = ((row * 17 + col * 31 + row * col * 7) & 0xff);
+                if      (h < 55)  return '#cc5c2e';
+                else if (h < 115) return '#b84820';
+                else if (h < 185) return '#a83a18';
+                else              return '#d8663a';
+            }
+
             function drawBrickWing(wx, ww, wh) {
-                // Base
-                ctx.fillStyle = '#a04520';
+                // Mortar base
+                ctx.fillStyle = '#6a2808';
                 ctx.fillRect(wx, bldTop, ww, wh);
-                // Brick pattern
-                for (let row = 0; row < wh; row += 8) {
-                    const offset = (Math.floor(row / 8) % 2) * 7;
-                    for (let col = -offset; col < ww; col += 14) {
-                        ctx.fillStyle = '#c05830';
-                        ctx.fillRect(wx + col + 1, bldTop + row + 1, 12, 6);
+                // Brick rows (8px tall, 15px wide)
+                for (let row = 0; row * 8 < wh; row++) {
+                    const offset = (row % 2) * 7;
+                    for (let col = -1; col * 15 < ww + 15; col++) {
+                        const brickX = wx + col * 15 + offset;
+                        const brickY = bldTop + row * 8;
+                        if (brickX + 15 < wx || brickX > wx + ww) continue;
+                        ctx.fillStyle = brickColor(row, col);
+                        ctx.fillRect(brickX + 1, brickY + 1, 13, 6);
                     }
                 }
-                // Windows
-                ctx.fillStyle = 'rgba(140,180,200,0.6)';
-                for (let wy2 = 20; wy2 < wh - 30; wy2 += 55) {
-                    for (let wcx = 14; wcx < ww - 30; wcx += 44) {
-                        ctx.fillStyle = 'rgba(140,180,200,0.6)';
-                        ctx.fillRect(wx + wcx, bldTop + wy2, 30, 40);
-                        ctx.fillStyle = '#223344';
-                        ctx.strokeStyle = '#223344';
+                // Wing windows — adapt column count to wing width
+                const colCount = Math.max(2, Math.floor(ww / 85));
+                const colGap   = Math.floor(ww / colCount);
+                for (let wrow = 0; wrow < 3; wrow++) {
+                    for (let wcol = 0; wcol < colCount; wcol++) {
+                        const wxi = wx + wcol * colGap + 12;
+                        const wyi = bldTop + 22 + wrow * 72;
+                        const wwi = colGap - 24;
+                        const whi = 54;
+                        if (wwi < 8) continue;
+                        // Glass
+                        ctx.fillStyle = 'rgba(138,188,220,0.68)';
+                        ctx.fillRect(wxi, wyi, wwi, whi);
+                        // Dark frame
+                        ctx.strokeStyle = '#1a2d3f';
                         ctx.lineWidth = 2;
-                        ctx.strokeRect(wx + wcx, bldTop + wy2, 30, 40);
+                        ctx.strokeRect(wxi, wyi, wwi, whi);
                         // Cross dividers
                         ctx.beginPath();
-                        ctx.moveTo(wx + wcx + 15, bldTop + wy2);
-                        ctx.lineTo(wx + wcx + 15, bldTop + wy2 + 40);
-                        ctx.moveTo(wx + wcx, bldTop + wy2 + 20);
-                        ctx.lineTo(wx + wcx + 30, bldTop + wy2 + 20);
+                        ctx.moveTo(wxi + Math.floor(wwi / 2), wyi);
+                        ctx.lineTo(wxi + Math.floor(wwi / 2), wyi + whi);
+                        ctx.moveTo(wxi, wyi + Math.floor(whi / 2));
+                        ctx.lineTo(wxi + wwi, wyi + Math.floor(whi / 2));
                         ctx.stroke();
+                        // Reflection shimmer
+                        ctx.fillStyle = 'rgba(215,240,255,0.22)';
+                        ctx.fillRect(wxi + 2, wyi + 2, 5, whi - 4);
                     }
                 }
             }
 
-            const wingW = Math.floor(W * 0.35);
-            const entrW = Math.floor(W * 0.3);
-            const entrX = bldX + wingW;
-            drawBrickWing(bldX, wingW, bldH);
-            drawBrickWing(bldX + wingW + entrW, wingW, bldH);
+            drawBrickWing(bldX, leftWingW, bldH);
+            drawBrickWing(rightWingX, rightWingW, bldH);
 
-            // Glass entrance (curved feel via trapezoid)
-            ctx.fillStyle = 'rgba(160,200,220,0.4)';
+            // ── GLASS CURTAIN-WALL ENTRANCE ───────────────────────────────────────
+            // Base glass fill
+            ctx.fillStyle = 'rgba(148,200,230,0.38)';
             ctx.fillRect(entrX, bldTop, entrW, bldH);
 
-            // Blue steel columns
-            ctx.fillStyle = '#4466aa';
-            const colSpacing = Math.floor(entrW / 4);
-            for (let ci = 0; ci <= 3; ci++) {
-                ctx.fillRect(entrX + ci * colSpacing - 5, bldTop, 10, bldH);
-                ctx.fillStyle = '#6688cc';
-                ctx.fillRect(entrX + ci * colSpacing - 4, bldTop, 3, bldH);
-                ctx.fillStyle = '#4466aa';
+            // Curtain wall grid — panels, then mullions on top
+            const mullionW  = 5;
+            const colStep   = 38;
+            const rowStep   = 48;
+            const panelGlass = 'rgba(158,208,238,0.58)';
+            for (let col = 0; col < entrW; col += colStep) {
+                for (let row = 0; row < bldH; row += rowStep) {
+                    const px = entrX + col + mullionW;
+                    const py = bldTop + row + mullionW;
+                    const pw = colStep - mullionW;
+                    const ph = rowStep - mullionW;
+                    if (pw < 2 || ph < 2) continue;
+                    ctx.fillStyle = panelGlass;
+                    ctx.fillRect(px, py, pw, ph);
+                    // Panel inner reflection
+                    ctx.fillStyle = 'rgba(225,248,255,0.14)';
+                    ctx.fillRect(px + 2, py + 2, 7, ph - 4);
+                }
             }
-
-            // Glass reflections diagonal stripe
-            ctx.fillStyle = 'rgba(200,230,255,0.12)';
+            // Vertical mullions
+            ctx.fillStyle = '#3d5da0';
+            for (let col = 0; col <= entrW; col += colStep) {
+                ctx.fillRect(entrX + col - Math.floor(mullionW / 2), bldTop, mullionW, bldH);
+            }
+            // Horizontal transoms
+            for (let row = 0; row <= bldH; row += rowStep) {
+                ctx.fillRect(entrX, bldTop + row - Math.floor(mullionW / 2), entrW, mullionW);
+            }
+            // Mullion highlight strip (left edge of each)
+            ctx.fillStyle = '#6080c8';
+            for (let col = 0; col <= entrW; col += colStep) {
+                ctx.fillRect(entrX + col - Math.floor(mullionW / 2), bldTop, 2, bldH);
+            }
+            // Wide diagonal reflection sweep
+            ctx.fillStyle = 'rgba(210,240,255,0.07)';
             ctx.beginPath();
-            ctx.moveTo(entrX + 20, bldTop);
-            ctx.lineTo(entrX + 80, bldTop);
-            ctx.lineTo(entrX + 40, bldTop + bldH);
-            ctx.lineTo(entrX - 20, bldTop + bldH);
+            ctx.moveTo(entrX + 15,       bldTop);
+            ctx.lineTo(entrX + 90,       bldTop);
+            ctx.lineTo(entrX + 55,       bldTop + bldH);
+            ctx.lineTo(entrX - 20,       bldTop + bldH);
             ctx.closePath();
             ctx.fill();
 
-            // SKOFABRIKKEN sign
+            // ── CURVED ARCH over entrance ─────────────────────────────────────────
+            ctx.fillStyle = '#2e4888';
+            ctx.beginPath();
+            ctx.moveTo(entrX, bldTop);
+            ctx.lineTo(entrX + entrW, bldTop);
+            ctx.quadraticCurveTo(entrX + entrW / 2, bldTop - 34, entrX, bldTop);
+            ctx.closePath();
+            ctx.fill();
+            // Arch highlight
+            ctx.strokeStyle = '#5577c0';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(entrX + 18, bldTop - 2);
+            ctx.quadraticCurveTo(entrX + entrW / 2, bldTop - 26, entrX + entrW - 18, bldTop - 2);
+            ctx.stroke();
+
+            // ── SKOFABRIKKEN SIGN ─────────────────────────────────────────────────
+            ctx.shadowColor = 'rgba(180,210,255,0.6)';
+            ctx.shadowBlur = 8;
             ctx.fillStyle = '#eeeeff';
-            ctx.font = 'bold 13px "Press Start 2P", monospace';
+            ctx.font = 'bold 14px "Press Start 2P", monospace';
             ctx.textAlign = 'center';
-            ctx.fillText('SKOFABRIKKEN', bldX + wingW + entrW / 2, bldTop + 36);
+            ctx.fillText('SKOFABRIKKEN', entrX + Math.floor(entrW / 2), bldTop + 28);
+            ctx.shadowBlur = 0;
+            ctx.font = '8px "Press Start 2P", monospace';
+            ctx.fillStyle = 'rgba(195,218,255,0.75)';
+            ctx.fillText('HANDELSENTER', entrX + Math.floor(entrW / 2), bldTop + 44);
             ctx.textAlign = 'left';
 
-            // Roofline
-            ctx.fillStyle = '#333340';
-            ctx.fillRect(bldX, bldTop - 10, wingW * 2 + entrW, 10);
+            // ── ROOFLINE parapet ──────────────────────────────────────────────────
+            ctx.fillStyle = '#242432';
+            ctx.fillRect(bldX, bldTop - 18, TOTAL_BLD_W, 18);
+            // Cornice overhang
+            ctx.fillStyle = '#16161e';
+            ctx.fillRect(bldX - 5, bldTop - 24, TOTAL_BLD_W + 10, 8);
+            // Cornice highlight edge
+            ctx.fillStyle = '#3a3a50';
+            ctx.fillRect(bldX - 5, bldTop - 24, TOTAL_BLD_W + 10, 2);
 
-            // Entrance doors
-            ctx.fillStyle = 'rgba(180,210,230,0.8)';
-            ctx.fillRect(entrX + entrW / 2 - 22, groundY - 84, 20, 60);
-            ctx.fillRect(entrX + entrW / 2 + 2, groundY - 84, 20, 60);
-            ctx.strokeStyle = '#4466aa';
+            // ── ENTRANCE DOORS ────────────────────────────────────────────────────
+            const doorW  = 30, doorH = 72;
+            const doorY  = groundY - doorH - 8;
+            const doorMid = entrX + Math.floor(entrW / 2);
+            ctx.fillStyle = 'rgba(185,218,238,0.88)';
+            ctx.fillRect(doorMid - doorW - 5, doorY, doorW, doorH);
+            ctx.fillRect(doorMid + 5,         doorY, doorW, doorH);
+            ctx.strokeStyle = '#3d5da0';
             ctx.lineWidth = 2;
-            ctx.strokeRect(entrX + entrW / 2 - 22, groundY - 84, 20, 60);
-            ctx.strokeRect(entrX + entrW / 2 + 2, groundY - 84, 20, 60);
+            ctx.strokeRect(doorMid - doorW - 5, doorY, doorW, doorH);
+            ctx.strokeRect(doorMid + 5,         doorY, doorW, doorH);
+            // Door handles
+            ctx.fillStyle = '#c8a020';
+            ctx.fillRect(doorMid - 8,  doorY + 34, 4, 8);
+            ctx.fillRect(doorMid + 4,  doorY + 34, 4, 8);
 
-            // Bollards
-            ctx.fillStyle = '#223355';
-            for (let bi = 0; bi < 5; bi++) {
-                const box = bldX + wingW * 0.3 + bi * 120;
-                ctx.fillRect(box, groundY - 20, 10, 18);
+            // ── TREES with planters (parallax 0.5x) ──────────────────────────────
+            const treeOff = -camX * 0.5;
+            const treePosArr = [200, 420, 640, 900, 1150, 1420, 1700, 1980, 2260, 2540, 2820, 3100];
+            for (const tp of treePosArr) {
+                const tx = tp + treeOff;
+                if (tx < -130 || tx > W + 130) continue;
+                const ty = groundY - 8;
+                // Planter box
+                ctx.fillStyle = '#888876';
+                ctx.fillRect(tx - 22, ty - 22, 44, 22);
+                ctx.fillStyle = '#666656';
+                ctx.fillRect(tx - 24, ty - 25, 48, 5);
+                // Dirt
+                ctx.fillStyle = '#5a3a18';
+                ctx.fillRect(tx - 18, ty - 20, 36, 10);
+                // Trunk
+                ctx.fillStyle = '#6a4020';
+                ctx.fillRect(tx - 6, ty - 88, 12, 66);
+                // Canopy layers
+                ctx.fillStyle = '#1e5010';
+                ctx.beginPath(); ctx.arc(tx, ty - 118, 34, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#2e6e1c';
+                ctx.beginPath(); ctx.arc(tx - 10, ty - 128, 27, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#3e8828';
+                ctx.beginPath(); ctx.arc(tx + 8,  ty - 125, 23, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#50a030';
+                ctx.beginPath(); ctx.arc(tx - 3,  ty - 136, 16, 0, Math.PI * 2); ctx.fill();
+                // Highlight
+                ctx.fillStyle = '#70c048';
+                ctx.beginPath(); ctx.arc(tx - 6, ty - 143, 9, 0, Math.PI * 2); ctx.fill();
+            }
+
+            // ── NYE VARER neon sign (pulsing magenta) ─────────────────────────────
+            const pulse = 0.72 + 0.28 * Math.sin(t * 0.0042);
+            const signX = entrX + Math.floor(entrW * 0.08);
+            const signY = bldTop + bldH - 62;
+            ctx.shadowColor = '#ff00ff';
+            ctx.shadowBlur  = Math.floor(22 * pulse);
+            ctx.fillStyle = `rgba(60,0,60,${0.85 * pulse})`;
+            ctx.fillRect(signX - 4, signY - 4, 158, 36);
+            ctx.fillStyle = `rgba(255,0,255,${pulse})`;
+            ctx.fillRect(signX, signY, 150, 28);
+            ctx.shadowBlur = Math.floor(28 * pulse);
+            ctx.fillStyle = `rgba(255,230,255,${0.95 * pulse})`;
+            ctx.font = 'bold 10px "Press Start 2P", monospace';
+            ctx.fillText('NYE VARER!', signX + 9, signY + 19);
+            ctx.shadowBlur = 0;
+
+            // ── REFLECTIVE BOLLARDS ───────────────────────────────────────────────
+            const bollardXArr = [
+                bldX + leftWingW * 0.15,
+                entrX - 70, entrX - 38,
+                entrX + entrW + 38, entrX + entrW + 70,
+                rightWingX + rightWingW * 0.85,
+            ];
+            for (const bpos of bollardXArr) {
+                const bx2 = bpos, by2 = groundY - 26;
+                ctx.fillStyle = '#1c2e50';
+                ctx.fillRect(bx2 - 5, by2, 10, 24);
                 ctx.beginPath();
-                ctx.arc(box + 5, groundY - 20, 5, Math.PI, 0);
+                ctx.arc(bx2, by2, 5, Math.PI, 0);
+                ctx.fill();
+                // Reflective band
+                ctx.fillStyle = '#3a5a88';
+                ctx.fillRect(bx2 - 5, by2 + 7, 10, 3);
+                // Top shine
+                ctx.fillStyle = '#5578b0';
+                ctx.beginPath();
+                ctx.arc(bx2 - 1, by2 - 2, 2, Math.PI, 0);
                 ctx.fill();
             }
 
-            // NYE VARER neon sign in one window
-            ctx.fillStyle = 'rgba(255,0,255,0.8)';
-            ctx.font = '8px "Press Start 2P", monospace';
-            ctx.fillText('NYE VARER', bldX + wingW + 14, bldTop + 50);
-
-            // Gutter line
+            // ── GUTTER LINE ───────────────────────────────────────────────────────
             ctx.fillStyle = '#00ffff';
             ctx.fillRect(0, groundY, W, 1);
         }
