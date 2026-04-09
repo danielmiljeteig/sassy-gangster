@@ -131,6 +131,14 @@
             <div class="label">💅 SASS COMBO</div>
             <div id="combo" style="font-size:24px; color:#00ffff;">×1</div>
         </div>
+
+        <div id="boss-bar-container" class="bar-container" style="display:none;">
+            <div class="label" style="color:#ff4400;">COACH BÅRD'S RAGE</div>
+            <div class="bar" style="border-color:#ff4400;">
+                <div id="boss-bar" class="fill" style="background: linear-gradient(90deg,#ff6600,#ff0000); width:100%;"></div>
+            </div>
+            <div id="boss-phase" style="font-size:10px; color:#ff4400; white-space:nowrap; margin-top:2px;">PHASE 1</div>
+        </div>
     </div>
 
     <div id="start-screen">
@@ -166,6 +174,9 @@
         let heat = 0;
         let combo = 1;
         let comboTimer = 0;
+        let currentLevel = 1;
+        let boss = null;
+        const WIN_SCORE = { 1: 250, 2: 300, 3: 0 };
 
         // Player object
         let player = {
@@ -184,6 +195,7 @@
             shankFreezeTimer: 0,   // counts down during the freeze at connection
             shankHitVictim: null,  // reference to the victim being stabbed
             shankSoundPlayed: false,
+            crouching: false,
             state: 'idle'
         };
 
@@ -236,9 +248,21 @@
                 } else {
                     this.y = level.groundY; // feet on ground
                 }
-                this.wallet = type === 'kid' ? 25 : type === 'teen' ? 45 : type === 'nerd' ? 60 : 100;
+                this.wallet = type === 'kid' ? 25
+                    : type === 'teen' ? 45
+                    : type === 'nerd' ? 60
+                    : type === 'shopper' ? 65
+                    : type === 'store_clerk' ? 45
+                    : type === 'security_guard' ? 80
+                    : 100; // lunchlady
                 this.trauma = 0;
-                this.maxTrauma = type === 'kid' ? 80 : type === 'teen' ? 120 : 150;
+                this.maxTrauma = type === 'kid' ? 80
+                    : type === 'teen' ? 120
+                    : type === 'nerd' ? 150
+                    : type === 'shopper' ? 110
+                    : type === 'store_clerk' ? 90
+                    : type === 'security_guard' ? 180
+                    : 150; // lunchlady
                 this.alive = true;
                 this.fainted = false;
                 this.shankCount = 0;
@@ -276,6 +300,361 @@
             }
         }
 
+        // Boss — Coach Bård
+        class Boss {
+            constructor() {
+                this.x = 1800;
+                this.y = level.groundY - 130;
+                this.width = 90;
+                this.height = 130;
+                this.hp = 600;
+                this.maxHp = 600;
+                this.phase = 1;
+                this.alive = true;
+                this.fainted = false;
+                this.vx = 0;
+                this.vy = 0;
+                this.onGround = true;
+                this.facing = -1;
+                this.skin = '#f0c8a0';
+                this.animFrame = 0;
+                this.state = 'patrol';
+                this.stateTimer = 120;
+                this.attackCooldown = 0;
+                this.anger = 0;
+                this.stunTimer = 0;
+                this.chargeVx = 0;
+                this.bandAngle = 0;
+                this.shakeX = 0;
+                this.screamTimer = 0;
+                this.screamText = '';
+                this.screams = [
+                    "MIN PLASS!", "GÅ HJEM!", "RESPEKTER UTSTYRET!",
+                    "DETTE ER MIN TRIMPARK!", "POLITIET KOMMER!", "TREKK DEG UNNA!"
+                ];
+            }
+
+            update() {
+                if (!this.alive) return;
+
+                // Phase transitions
+                if (this.phase === 1 && this.hp <= 400) this.enterPhaseTransition(2);
+                else if (this.phase === 2 && this.hp <= 200) this.enterPhaseTransition(3);
+
+                if (this.state === 'stun') {
+                    this.stunTimer--;
+                    this.vx *= 0.7;
+                    if (this.stunTimer <= 0) { this.state = 'patrol'; this.stateTimer = 60; }
+                    this.applyPhysics();
+                    return;
+                }
+
+                if (this.state === 'phase_transition') {
+                    this.stateTimer--;
+                    if (this.stateTimer <= 0) { this.state = 'chase'; this.stateTimer = 120; }
+                    return;
+                }
+
+                this.anger = Math.floor((1 - this.hp / this.maxHp) * 100);
+                const dx = player.x - this.x;
+                const dist = Math.abs(dx);
+                this.facing = dx > 0 ? 1 : -1;
+
+                this.stateTimer--;
+                this.attackCooldown--;
+
+                if (this.state === 'patrol') {
+                    this.vx = this.facing * (1.5 + this.anger * 0.015);
+                    if (dist < 400 || this.stateTimer <= 0) {
+                        this.state = 'chase'; this.stateTimer = 180;
+                    }
+                } else if (this.state === 'chase') {
+                    this.vx = this.facing * (3 + this.phase * 0.8 + this.anger * 0.025);
+                    if (dist < 140 && this.attackCooldown <= 0) this.chooseAttack();
+                    if (this.stateTimer <= 0) { this.state = 'patrol'; this.stateTimer = 90; }
+                } else if (this.state === 'attack_swing') {
+                    this.vx *= 0.7;
+                    this.animFrame++;
+                    this.bandAngle = Math.sin(this.animFrame / 7) * 2.0;
+                    if (this.animFrame === 12) {
+                        if (dist < 200 && Math.abs(this.y - player.y) < 120) {
+                            heat = Math.min(99, heat + 15);
+                            player.vx = this.facing * 10;
+                            player.vy = -8;
+                            for (let i = 0; i < 10; i++) {
+                                const p = new Particle(player.x, player.y, 'sparkle');
+                                p.color = '#ff4400'; level.particles.push(p);
+                            }
+                        }
+                    }
+                    if (this.animFrame > 24) {
+                        this.state = 'chase'; this.stateTimer = 120;
+                        this.attackCooldown = Math.max(40, 90 - this.anger);
+                        this.animFrame = 0;
+                    }
+                } else if (this.state === 'attack_charge') {
+                    if (this.animFrame === 0) {
+                        this.chargeVx = this.facing * (10 + this.phase * 2);
+                        this.screamText = this.screams[Math.floor(Math.random() * this.screams.length)];
+                        this.screamTimer = 80;
+                    }
+                    this.vx = this.chargeVx;
+                    this.chargeVx *= 0.95;
+                    this.animFrame++;
+                    if (Math.abs(player.x - this.x) < 110 && Math.abs(player.y - this.y) < 130) {
+                        heat = Math.min(99, heat + 20);
+                        player.vx = this.facing * 14;
+                        player.vy = -10;
+                        this.chargeVx = 0;
+                    }
+                    if (this.animFrame > 45 || Math.abs(this.chargeVx) < 1) {
+                        this.state = 'chase'; this.stateTimer = 90;
+                        this.attackCooldown = Math.max(50, 110 - this.anger);
+                        this.animFrame = 0;
+                    }
+                } else if (this.state === 'attack_stomp') {
+                    if (this.animFrame === 0) { this.vy = -16; this.onGround = false; }
+                    this.animFrame++;
+                    if (this.animFrame > 10 && this.onGround) {
+                        if (Math.abs(player.x - this.x) < 220) {
+                            heat = Math.min(99, heat + 25);
+                            player.vy = -12;
+                        }
+                        this.shakeX = 18;
+                        for (let i = 0; i < 20; i++) {
+                            const p = new Particle(this.x, this.y, 'sparkle');
+                            p.color = '#ff6600'; p.vx *= 2; p.vy *= 2;
+                            level.particles.push(p);
+                        }
+                        this.state = 'chase'; this.stateTimer = 120;
+                        this.attackCooldown = Math.max(60, 130 - this.anger);
+                        this.animFrame = 0;
+                    }
+                }
+
+                if (this.shakeX > 0) this.shakeX = Math.max(0, this.shakeX - 1.5);
+                if (this.shakeX > 0) cameraX += Math.sin(Date.now() / 50) * this.shakeX * 0.4;
+                if (this.screamTimer > 0) this.screamTimer--;
+                this.applyPhysics();
+                this.x = Math.max(100, Math.min(LEVEL_WIDTH - 200, this.x));
+            }
+
+            chooseAttack() {
+                this.animFrame = 0;
+                if (this.phase === 1) {
+                    this.state = 'attack_swing';
+                } else if (this.phase === 2) {
+                    this.state = Math.random() > 0.5 ? 'attack_swing' : 'attack_charge';
+                } else {
+                    const r = Math.random();
+                    this.state = r < 0.3 ? 'attack_swing' : r < 0.6 ? 'attack_charge' : 'attack_stomp';
+                }
+            }
+
+            enterPhaseTransition(n) {
+                this.phase = n;
+                this.state = 'phase_transition';
+                this.stateTimer = 90;
+                this.vx = 0;
+                for (let i = 0; i < 30; i++) {
+                    const angle = (i / 30) * Math.PI * 2;
+                    const p = new Particle(this.x, this.y - 60, 'sparkle');
+                    p.vx = Math.cos(angle) * 8; p.vy = Math.sin(angle) * 8;
+                    p.color = n === 2 ? '#ffaa00' : '#ff0000';
+                    level.particles.push(p);
+                }
+                this.screamText = n === 2 ? "DU PLAGER MEG!" : "DET ER NOK!!!";
+                this.screamTimer = 120;
+            }
+
+            takeDamage(amount) {
+                if (this.state === 'phase_transition') return;
+                this.hp = Math.max(0, this.hp - amount);
+                this.stunTimer = 18;
+                this.state = 'stun';
+                this.animFrame = 0;
+                if (this.hp <= 0) {
+                    this.alive = false;
+                    this.fainted = true;
+                    this.triggerDefeat();
+                }
+            }
+
+            triggerDefeat() {
+                for (let i = 0; i < 40; i++) {
+                    const types = ['sparkle', 'heart', 'coin'];
+                    const p = new Particle(this.x, this.y - 60, types[i % 3]);
+                    p.vx = (Math.random() - 0.5) * 16;
+                    p.vy = (Math.random() - 0.5) * 16 - 4;
+                    p.life = 90;
+                    level.particles.push(p);
+                }
+                setTimeout(() => {
+                    if (gameState === 'playing') {
+                        gameState = 'levelcomplete';
+                        document.getElementById('level-complete-screen').style.display = 'flex';
+                        document.getElementById('level-score').innerHTML =
+                            `COACH BÅRD DEFEATED!<br>LUNCH MONEY: <span style="color:#00ff00">$${score}</span>`;
+                    }
+                }, 1500);
+            }
+
+            applyPhysics() {
+                this.vy += 0.9;
+                this.x += this.vx;
+                this.y += this.vy;
+                this.onGround = false;
+                if (this.y + this.height >= level.groundY) {
+                    this.y = level.groundY - this.height;
+                    this.vy = 0;
+                    this.onGround = true;
+                }
+                for (let p of level.platforms) {
+                    if (p.y >= 520) continue;
+                    if (this.x + this.width > p.x && this.x < p.x + p.w &&
+                        this.y + this.height > p.y && this.y + this.height - this.vy <= p.y) {
+                        this.y = p.y - this.height;
+                        this.vy = 0;
+                        this.onGround = true;
+                    }
+                }
+                this.vx *= 0.85;
+            }
+
+            draw() {
+                if (!this.alive && this.fainted) {
+                    // Slumped on ground
+                    const bx = this.x - cameraX;
+                    ctx.save();
+                    ctx.translate(bx + this.width / 2, this.y + this.height);
+                    ctx.rotate(0.5);
+                    ctx.fillStyle = '#c85020';
+                    ctx.fillRect(-20, -40, 40, 40);
+                    ctx.fillStyle = this.skin;
+                    ctx.beginPath();
+                    ctx.arc(0, -50, 18, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                    return;
+                }
+
+                const bx = this.x - cameraX;
+                const t = Date.now();
+                const trackColor = this.phase === 1 ? '#c85020' : this.phase === 2 ? '#a03810' : '#ff4400';
+
+                ctx.save();
+                ctx.translate(bx + this.width / 2, this.y + this.height);
+                ctx.scale(this.facing * (1 + (this.phase - 1) * 0.04), 1 + (this.phase - 1) * 0.04);
+
+                // SHOES
+                ctx.fillStyle = '#222';
+                ctx.fillRect(-20, -6, 18, 7);
+                ctx.fillRect(2, -6, 18, 7);
+
+                // LEGS — tracksuit bottoms
+                ctx.fillStyle = trackColor;
+                ctx.fillRect(-15, -55, 12, 50);
+                ctx.fillRect(3, -55, 12, 50);
+
+                // BODY — tracksuit top
+                ctx.fillStyle = trackColor;
+                ctx.fillRect(-22, -105, 44, 52);
+
+                // Tracksuit stripes (two white stripes on arms area)
+                ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                ctx.fillRect(-22, -100, 5, 42);
+                ctx.fillRect(17, -100, 5, 42);
+
+                // RESISTANCE BAND arm (left)
+                const walkSwing = Math.sin(t / 180) * 0.3;
+                ctx.save();
+                ctx.translate(-22, -105 + 10);
+                ctx.rotate(this.bandAngle + walkSwing);
+                ctx.fillStyle = trackColor;
+                ctx.fillRect(-8, 0, 10, 24);
+                ctx.fillStyle = this.skin;
+                ctx.fillRect(-7, 24, 8, 12);
+                // Band itself
+                ctx.strokeStyle = '#cc8822';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(-3, 36);
+                ctx.bezierCurveTo(-20, 50, -30, 30, -20, 10);
+                ctx.stroke();
+                ctx.restore();
+
+                // Right arm (pumping)
+                ctx.save();
+                ctx.translate(22, -105 + 10);
+                ctx.rotate(-walkSwing);
+                ctx.fillStyle = trackColor;
+                ctx.fillRect(-2, 0, 10, 24);
+                ctx.fillStyle = this.skin;
+                ctx.fillRect(-1, 24, 8, 12);
+                ctx.restore();
+
+                // HEAD — bald
+                ctx.fillStyle = this.state === 'stun' ? '#ffaaaa' : this.skin;
+                ctx.beginPath();
+                ctx.arc(0, -105 - 22, 26, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Bald shine
+                ctx.fillStyle = 'rgba(255,255,255,0.18)';
+                ctx.beginPath();
+                ctx.ellipse(-6, -105 - 34, 9, 6, -0.3, 0, Math.PI * 2);
+                ctx.fill();
+
+                // SUNGLASSES
+                ctx.fillStyle = '#111';
+                ctx.fillRect(-16, -105 - 30, 12, 8);
+                ctx.fillRect(4, -105 - 30, 12, 8);
+                ctx.strokeStyle = '#555';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(-4, -105 - 26);
+                ctx.lineTo(4, -105 - 26);
+                ctx.stroke();
+
+                // MOUSTACHE
+                ctx.fillStyle = '#3a1a08';
+                ctx.fillRect(-12, -105 - 12, 10, 5);
+                ctx.fillRect(2, -105 - 12, 10, 5);
+                // Phase 3: twitching moustache
+                if (this.phase === 3) {
+                    const tw = Math.sin(t / 40) * 2;
+                    ctx.fillStyle = '#5a2a10';
+                    ctx.fillRect(-14 + tw, -105 - 14, 10, 4);
+                    ctx.fillRect(4 - tw, -105 - 14, 10, 4);
+                }
+
+                // V-brows (angry)
+                ctx.strokeStyle = '#3a1a08';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(-18, -105 - 42);
+                ctx.lineTo(-6, -105 - 36);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(6, -105 - 36);
+                ctx.lineTo(18, -105 - 42);
+                ctx.stroke();
+
+                // SCREAM TEXT
+                if (this.screamTimer > 0) {
+                    const alpha = Math.min(1, this.screamTimer / 20);
+                    ctx.globalAlpha = alpha;
+                    ctx.fillStyle = '#ff00ff';
+                    ctx.font = 'bold 11px "Press Start 2P", monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(this.screamText, 0, -105 - 60);
+                    ctx.globalAlpha = 1;
+                }
+
+                ctx.restore();
+            }
+        }
+
         // Keyboard
         let keys = {};
         window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
@@ -296,6 +675,18 @@
         function attemptShank() {
             if (player.shankCooldown > 0) return;
 
+            // Crouch shank — launch forward in a dramatic lunge
+            if (player.crouching) {
+                player.state = 'crouchShank';
+                player.animationFrame = 0;
+                player.shankSoundPlayed = false;
+                player.shankHitVictim = null;
+                player.shankCooldown = 70;
+                player.crouching = false;
+                player.vx = player.facing * 15;
+                return;
+            }
+
             player.state = 'shank';
             player.animationFrame = 0;
             player.shankFreezeTimer = 0;
@@ -305,14 +696,29 @@
 
             // Find nearby victim — store reference, apply damage at connection
             let hit = false;
+            const playerCenterY = player.y + player.height / 2;
             for (let v of level.victims) {
-                if (!v.alive || v.fainted) continue;
+                if (!v.alive) continue;
                 const dx = v.x - player.x;
-                if (Math.abs(dx) < 140 && Math.abs(v.y - player.y) < 100) {
+                if (Math.abs(dx) < 140 && Math.abs(v.y - playerCenterY) < 150) {
                     hit = true;
                     player.shankHitVictim = v;
                     v.crying = true; // will be set during connection
                     break;
+                }
+            }
+
+            // Boss hit (Level 3)
+            if (!hit && currentLevel === 3 && boss && boss.alive) {
+                const bdx = boss.x - player.x;
+                if (Math.abs(bdx) < 160 && Math.abs(boss.y - playerCenterY) < 160) {
+                    hit = true;
+                    const dmg = Math.floor(35 + combo * 10);
+                    boss.takeDamage(dmg);
+                    createShankEffects(boss.x, boss.y - 60);
+                    score += Math.floor(dmg * 0.5 * combo);
+                    combo = Math.min(8, combo + 1);
+                    comboTimer = 120;
                 }
             }
 
@@ -354,13 +760,18 @@
         }
 
         // Preload sounds
-        const quackSound = new Audio('quack.mp3');
-        quackSound.volume = 0.5;
+        const shankSounds = [
+            new Audio('quack.mp3'),
+            new Audio('Nytt opptak 28.m4a'),
+            new Audio('Nytt opptak 29.m4a'),
+        ];
+        shankSounds.forEach(s => s.volume = 0.5);
         const roleRevealSound = new Audio('role-reveal.mp3');
         roleRevealSound.volume = 0.6;
 
         function playSassSound() {
-            const snd = quackSound.cloneNode();
+            const base = shankSounds[Math.floor(Math.random() * shankSounds.length)];
+            const snd = base.cloneNode();
             snd.volume = 0.4 + Math.random() * 0.2;
             snd.playbackRate = 0.9 + Math.random() * 0.3;
             snd.play().catch(() => {});
@@ -376,6 +787,7 @@
             const py = player.y;
             const f = player.animationFrame;
             const isShank = player.state === 'shank';
+            const isCrouchShank = player.state === 'crouchShank';
             const t = Date.now();
 
             // Shank phases (30 frames + 30 freeze at frame 16):
@@ -385,6 +797,7 @@
             // 25-30: turn back to face forward
             const shankPhase = isShank ? (f <= 8 ? 0 : f <= 16 ? 1 : f <= 24 ? 2 : 3) : -1;
             const isFrozen = isShank && f === 16 && player.shankFreezeTimer > 0;
+            const csPhase = isCrouchShank ? (f < 7 ? 0 : f < 15 ? 1 : f < 23 ? 2 : 3) : -1;
 
             // How much we've turned to face away (0→1)
             let turnAway = 0;
@@ -436,6 +849,24 @@
             if (isShank && archAngle > 0) {
                 ctx.translate(0, 40);
                 ctx.rotate(-archAngle); // negative = lean back
+                ctx.translate(0, -40);
+            }
+
+            // Crouch squat — squash vertically, pivot from feet so they stay on ground
+            if (player.state === 'crouch') {
+                ctx.translate(0, player.height / 2 * 0.35);
+                ctx.scale(1, 0.65);
+            }
+
+            // CrouchShank lunge — tilt body forward around hip pivot
+            if (isCrouchShank) {
+                let lunge;
+                if      (csPhase === 0) lunge = (f / 7) * 0.3;
+                else if (csPhase === 1) lunge = 0.3 + ((f - 7) / 8) * 1.1;
+                else if (csPhase === 2) lunge = 1.4 - ((f - 15) / 8) * 1.2;
+                else                   lunge = 0.2 - ((f - 23) / 7) * 0.2;
+                ctx.translate(0, 40);
+                ctx.rotate(lunge);
                 ctx.translate(0, -40);
             }
 
@@ -702,11 +1133,32 @@
                 leftForearm = 0.2 + foreSwing;
                 rightForearm = 0.2 - foreSwing;
             } else if (player.state === 'jump') {
-                // Arms float up loosely
-                leftArmAngle = -0.3 + idleDangle;
-                rightArmAngle = -0.2 - idleDangle;
-                leftForearm = -0.4;
-                rightForearm = -0.3;
+                // Ragdoll dangle driven by vertical velocity
+                // Going up (vy<0): arms trail down; falling (vy>0): forearms flop forward
+                const vyDangle = player.vy * 0.028;
+                leftArmAngle  =  0.4 + idleDangle + vyDangle;
+                rightArmAngle =  0.35 - idleDangle + vyDangle;
+                leftForearm   =  0.8 + vyDangle * 1.6;
+                rightForearm  =  0.7 + vyDangle * 1.6;
+            } else if (player.state === 'crouch') {
+                // Crouched: arms low and forward, coiled to spring
+                leftArmAngle  = 0.8;
+                rightArmAngle = 0.7;
+                leftForearm   = 0.5;
+                rightForearm  = 0.5;
+            } else if (isCrouchShank) {
+                // Lunge: knife arm thrusts forward (body rotation makes "up" = forward in world)
+                if (csPhase <= 1) {
+                    leftArmAngle  =  0.5;
+                    rightArmAngle = -1.8 - csPhase * 0.3;
+                    leftForearm   =  0.3;
+                    rightForearm  = -0.8;
+                } else {
+                    leftArmAngle  =  0.5;
+                    rightArmAngle = -0.8 + (csPhase - 2) * 0.3;
+                    leftForearm   =  0.3;
+                    rightForearm  = -0.3;
+                }
             } else {
                 // Idle: arms hang with slight sway
                 leftArmAngle = 0.08 + idleDangle;
@@ -762,12 +1214,24 @@
             ctx.fillStyle = skinColor;
             ctx.fillRect(-4, 0, 8, 20);
             // Hand
-            ctx.beginPath();
-            ctx.arc(0, 22, 6, 0, Math.PI * 2);
-            ctx.fill();
+            if (player.state === 'crouch') {
+                // Gang sign: index + pinky extended past fist, middle + ring curled (devil horns)
+                ctx.fillStyle = skinColor;
+                ctx.fillRect(-4, 20, 8,  8);  // fist / curled middle+ring
+                ctx.fillRect( 4, 20, 3, 14);  // index finger extended (right of fist)
+                ctx.fillRect(-7, 20, 3, 13);  // pinky finger extended (left of fist)
+                // Nail lines at knuckles
+                ctx.fillStyle = 'rgba(0,0,0,0.45)';
+                ctx.fillRect( 4, 20, 3, 2);
+                ctx.fillRect(-7, 20, 3, 2);
+            } else {
+                ctx.beginPath();
+                ctx.arc(0, 22, 6, 0, Math.PI * 2);
+                ctx.fill();
+            }
 
-            // Knife in right hand during shank — long blade to reach victims
-            if (isShank) {
+            // Knife in right hand during shank or crouchShank lunge
+            if (isShank || isCrouchShank) {
                 ctx.fillStyle = '#333';
                 ctx.fillRect(-3, 24, 6, 14); // handle (slightly bigger)
                 // Handle wrap
@@ -840,6 +1304,18 @@
                 rightLegAngle = 0;
                 leftLegSpread = -10;
                 rightLegSpread = 10;
+            } else if (player.state === 'crouch') {
+                // Deep squat: wide bent stance
+                leftLegAngle  =  0.6;
+                rightLegAngle = -0.6;
+                leftLegSpread = -18;
+                rightLegSpread = 18;
+            } else if (isCrouchShank && csPhase === 1) {
+                // Mid-lunge stride: front leg punching forward, back leg trailing
+                leftLegAngle  = -0.5;
+                rightLegAngle =  0.6;
+                leftLegSpread = -12;
+                rightLegSpread = 16;
             }
 
             // Left leg (front in lunge)
@@ -919,15 +1395,73 @@
         }
 
         function updatePlayer() {
-            // Horizontal movement
-            player.vx = 0;
-            if (keys['a'] || keys['arrowleft']) {
-                player.vx = -player.speed;
-                player.facing = -1;
+            // CrouchShank lunge — physics-driven, bypasses normal movement
+            if (player.state === 'crouchShank') {
+                player.vx *= 0.87;
+                player.vy += 0.9;
+                player.x += player.vx;
+                player.y += player.vy;
+                player.onGround = false;
+                if (player.y + player.height > level.groundY) {
+                    player.y = level.groundY - player.height;
+                    player.vy = 0;
+                    player.onGround = true;
+                }
+                player.x = Math.max(80, Math.min(LEVEL_WIDTH - 200, player.x));
+                // Hit detection at frame 8 — wide forward arc, 2.5× damage
+                if (player.animationFrame === 8 && !player.shankSoundPlayed) {
+                    player.shankSoundPlayed = true;
+                    playSassSound();
+                    const pcY = player.y + player.height / 2;
+                    for (let v of level.victims) {
+                        if (!v.alive) continue;
+                        const dx = v.x - player.x;
+                        if (dx * player.facing > 0 && Math.abs(dx) < 320 && Math.abs(v.y - pcY) < 150) {
+                            player.shankHitVictim = v;
+                            v.crying = true;
+                            v.trauma += Math.floor((28 + combo * 8) * 2.5);
+                            v.shankCount++;
+                            createShankEffects(v.x, v.y);
+                            createShankEffects(v.x + 30, v.y - 30);
+                            score += Math.floor(v.wallet * 0.5 * combo);
+                            v.wallet = Math.max(0, v.wallet - Math.floor(v.wallet * 0.5));
+                            combo = Math.min(8, combo + 2);
+                            comboTimer = 200;
+                            if (v.trauma >= v.maxTrauma) {
+                                v.fainted = true;
+                                heat += 18;
+                                createFaintEffects(v.x, v.y);
+                            }
+                            break;
+                        }
+                    }
+                }
+                player.animationFrame++;
+                if (player.animationFrame > 30) {
+                    player.state = 'idle';
+                    player.shankHitVictim = null;
+                    player.shankSoundPlayed = false;
+                }
+                if (player.shankCooldown > 0) player.shankCooldown--;
+                const targetCam = player.x - 400;
+                cameraX = Math.max(0, Math.min(LEVEL_WIDTH - canvas.width, cameraX * 0.92 + targetCam * 0.08));
+                return;
             }
-            if (keys['d'] || keys['arrowright']) {
-                player.vx = player.speed;
-                player.facing = 1;
+
+            // Crouch: hold S or ArrowDown while on ground
+            player.crouching = (keys['s'] || keys['arrowdown']) && player.onGround && player.state !== 'shank';
+
+            // Horizontal movement (locked while crouching)
+            player.vx = 0;
+            if (!player.crouching) {
+                if (keys['a'] || keys['arrowleft']) {
+                    player.vx = -player.speed;
+                    player.facing = -1;
+                }
+                if (keys['d'] || keys['arrowright']) {
+                    player.vx = player.speed;
+                    player.facing = 1;
+                }
             }
 
             // Jump
@@ -1000,6 +1534,8 @@
                     }
                     player.shankHitVictim = null;
                 }
+            } else if (player.crouching) {
+                player.state = 'crouch';
             } else if (!player.onGround) {
                 player.state = 'jump';
             } else if (Math.abs(player.vx) > 1) {
@@ -1018,17 +1554,29 @@
 
         function spawnInitialVictims() {
             level.victims = [];
-            // Kids — one standing, one on swing, one standing near slide
-            level.victims.push(new Victim(620, 'kid', 'standing'));
-            level.victims.push(new Victim(1180, 'kid', 'sitting_swing'));  // on swing
-            level.victims.push(new Victim(1700, 'kid', 'standing'));
-            // Teens — one standing, one on bench
-            level.victims.push(new Victim(1980, 'teen', 'standing'));
-            level.victims.push(new Victim(2820, 'teen', 'sitting_bench')); // on bench
-            // Nerd — sitting on bench
-            level.victims.push(new Victim(2840, 'nerd', 'sitting_bench'));
-            // Lunch Lady — standing near end
-            level.victims.push(new Victim(3200, 'lunchlady', 'standing'));
+            if (currentLevel === 1) {
+                level.victims.push(new Victim(620,  'kid',       'standing'));
+                level.victims.push(new Victim(1180, 'kid',       'standing'));
+                level.victims.push(new Victim(1700, 'kid',       'standing'));
+                level.victims.push(new Victim(1980, 'teen',      'standing'));
+                level.victims.push(new Victim(2820, 'teen',      'standing'));
+                level.victims.push(new Victim(2840, 'nerd',      'standing'));
+                level.victims.push(new Victim(3200, 'lunchlady', 'standing'));
+            } else if (currentLevel === 2) {
+                level.victims.push(new Victim(400,  'kid',            'standing'));
+                level.victims.push(new Victim(620,  'shopper',        'standing'));
+                level.victims.push(new Victim(900,  'teen',           'standing'));
+                level.victims.push(new Victim(1150, 'store_clerk',    'standing'));
+                level.victims.push(new Victim(1500, 'shopper',        'standing'));
+                level.victims.push(new Victim(1800, 'nerd',           'standing'));
+                level.victims.push(new Victim(2100, 'teen',           'standing'));
+                level.victims.push(new Victim(2450, 'shopper',        'standing'));
+                level.victims.push(new Victim(2800, 'store_clerk',    'standing'));
+                level.victims.push(new Victim(3200, 'security_guard', 'standing'));
+            } else if (currentLevel === 3) {
+                // No regular victims — boss only
+                boss = new Boss();
+            }
         }
 
         function updateVictims() {
@@ -1041,6 +1589,7 @@
                     level.victims.splice(i, 1);
                 }
             }
+            if (currentLevel === 3 && boss) boss.update();
         }
 
         function updateParticles() {
@@ -1078,6 +1627,7 @@
             grassPatches: [],
             dirtPatches: [],
             pebbles: [],
+            clouds: [],
         };
 
         function generateBackgroundElements() {
@@ -1103,7 +1653,7 @@
                 'GANG', 'RIP', 'SASS', 'DRIP',
                 'SKRRT', 'BRUH', 'GG', 'EZ'
             ];
-            const graffitiColors = ['#665566', '#556666', '#666655', '#664444', '#446644', '#665533', '#665566'];
+            const graffitiColors = ['rgba(255,0,255,0.22)', 'rgba(0,255,255,0.18)', 'rgba(255,215,0,0.20)', 'rgba(255,0,255,0.22)', 'rgba(0,255,255,0.18)', 'rgba(255,215,0,0.20)', 'rgba(255,0,255,0.22)'];
             for (let i = 0; i < 15; i++) {
                 bgElements.graffiti.push({
                     x: 200 + rng() * (LEVEL_WIDTH - 400),
@@ -1117,11 +1667,11 @@
             }
             // Unique Halden tags — placed once each
             bgElements.graffiti.push({
-                x: 800, y: 460, text: 'HALDEN', color: '#555060',
+                x: 800, y: 460, text: 'HALDEN', color: 'rgba(255,0,255,0.22)',
                 size: 28, rotation: -0.08, onGround: false
             });
             bgElements.graffiti.push({
-                x: 2200, y: 470, text: 'AWF', color: '#505555',
+                x: 2200, y: 470, text: 'AWF', color: 'rgba(0,255,255,0.18)',
                 size: 24, rotation: 0.12, onGround: false
             });
 
@@ -1256,12 +1806,24 @@
                     shade: 0.2 + rng() * 0.3
                 });
             }
+
+            // Neo-Noir pink pixel clouds (Shovel Knight stepped style)
+            for (let i = 0; i < 14; i++) {
+                bgElements.clouds.push({
+                    x: rng() * LEVEL_WIDTH,
+                    y: 40 + rng() * 120,
+                    w: 40 + rng() * 80,   // base width
+                    speed: 0.28 + rng() * 0.04
+                });
+            }
         }
 
         generateBackgroundElements();
 
         // === GROUND RENDERING ===
         function drawGround() {
+            if (currentLevel === 2) { drawSkofabrikkenGround(); return; }
+            if (currentLevel === 3) { drawTrimparkGround(); return; }
             const groundY = level.groundY; // 520
 
             // === DIRT / EARTH BASE LAYER ===
@@ -1429,37 +1991,149 @@
         }
 
         function drawBackground() {
-            // Dark gritty sky gradient
-            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-            grad.addColorStop(0, '#0d0015');
-            grad.addColorStop(0.3, '#1a0033');
-            grad.addColorStop(0.7, '#2a1040');
-            grad.addColorStop(1, '#1a0a20');
-            ctx.fillStyle = grad;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (currentLevel === 2) { drawSkofabrikkenBackground(); return; }
+            if (currentLevel === 3) { drawTrimparkBackground(); return; }
+            // ================================================================
+            // NEO-NOIR PLAYGROUND — Named Palette
+            // ================================================================
+            // SKY_BAND_0   = #0a0010  (near-black violet, top)
+            // SKY_BAND_1   = #180028  (deep void purple)
+            // SKY_BAND_2   = #280040  (rich night purple)
+            // SKY_BAND_3   = #3d0055  (lifted purple, horizon glow)
+            // SKY_BAND_4   = #2d0033  (settled purple, low sky)
+            // BUILDING     = #0a000e  (near-black with purple whisper)
+            // NEON_MAGENTA = #ff00ff
+            // NEON_CYAN    = #00ffff
+            // NEON_PINK    = #ff00aa
+            // NEON_VIOLET  = #aa00ff
+            // CLOUD_PINK   = #ff69b4
+            // CLOUD_OUTLINE = #ff00ff
+            // GUTTER       = #00ffff
+            // ================================================================
 
-            // Smoggy haze
-            ctx.fillStyle = 'rgba(80, 40, 60, 0.15)';
-            ctx.fillRect(0, 100, canvas.width, 300);
+            // === LAYER 0: SKY — pixel-banded gradient (parallax 0.1x) ===
+            // Each band fills its pixel rows with a flat colour.
+            // At each boundary the last 6 rows dither by alternating the two colours.
+            const skyBands = [
+                { y0: 0,   y1: 80,  color: '#0a0010' },
+                { y0: 80,  y1: 180, color: '#180028' },
+                { y0: 180, y1: 280, color: '#280040' },
+                { y0: 280, y1: 360, color: '#3d0055' },
+                { y0: 360, y1: 520, color: '#2d0033' },
+            ];
+
+            // Solid fill for each band
+            for (const band of skyBands) {
+                ctx.fillStyle = band.color;
+                ctx.fillRect(0, band.y0, canvas.width, band.y1 - band.y0);
+            }
+
+            // Dither transitions: at each inter-band boundary alternate 1px rows
+            for (let bi = 0; bi < skyBands.length - 1; bi++) {
+                const boundary = skyBands[bi].y1;
+                const colA = skyBands[bi].color;
+                const colB = skyBands[bi + 1].color;
+                const DITHER_PX = 6;
+                for (let d = 0; d < DITHER_PX; d++) {
+                    ctx.fillStyle = (d % 2 === 0) ? colA : colB;
+                    ctx.fillRect(0, boundary - DITHER_PX + d, canvas.width, 1);
+                }
+            }
+
+            // === LAYER 1: GOD-RAY OVERLAY (before buildings) ===
+            // Seeded vertical semi-transparent magenta/violet rectangles
+            const godRayData = [
+                { x: 60,   w: 120, color: 'rgba(255,0,255,0.04)' },
+                { x: 310,  w: 90,  color: 'rgba(170,0,255,0.03)' },
+                { x: 540,  w: 180, color: 'rgba(255,0,255,0.04)' },
+                { x: 820,  w: 80,  color: 'rgba(170,0,255,0.03)' },
+                { x: 1020, w: 200, color: 'rgba(255,0,255,0.04)' },
+                { x: 1180, w: 110, color: 'rgba(170,0,255,0.03)' },
+            ];
+            for (const ray of godRayData) {
+                ctx.fillStyle = ray.color;
+                ctx.fillRect(ray.x, 0, ray.w, 300);
+            }
+
+            // === LAYER 1.5: CLOUDS — hot-pink stepped pixel blocks (parallax 0.3x) ===
+            // Shovel Knight style: three stacked rectangles (8/16/8 px heights)
+            const cloudP = 0.3;
+            for (const cl of bgElements.clouds) {
+                const cx = cl.x - cameraX * cloudP;
+                // Wrap cloud horizontally across the visible level width
+                const cxWrapped = ((cx % (canvas.width + cl.w + 100)) + canvas.width + cl.w + 100) % (canvas.width + cl.w + 100) - cl.w;
+                if (cxWrapped + cl.w < -20 || cxWrapped > canvas.width + 20) continue;
+
+                const cy = cl.y;
+                const cw = cl.w;
+
+                // Stepped pixel-block shape: narrow / wide / narrow
+                const midW = cw;
+                const topW = Math.round(cw * 0.55);
+                const botW = Math.round(cw * 0.7);
+                const topOff = Math.round((cw - topW) / 2);
+                const botOff = Math.round((cw - botW) / 2);
+
+                // Fill: hot pink body
+                ctx.fillStyle = '#ff69b4';
+                ctx.fillRect(cxWrapped + topOff, cy,      topW, 8);
+                ctx.fillRect(cxWrapped,           cy + 8,  midW, 16);
+                ctx.fillRect(cxWrapped + botOff,  cy + 24, botW, 8);
+
+                // 2px magenta outline on top-left edge only
+                ctx.fillStyle = '#ff00ff';
+                // Top edge of top block
+                ctx.fillRect(cxWrapped + topOff, cy,     topW, 2);
+                // Left edge of top block
+                ctx.fillRect(cxWrapped + topOff, cy,     2,    8);
+                // Left edge of mid block
+                ctx.fillRect(cxWrapped,           cy + 8, 2,    16);
+                // Left edge of bottom block
+                ctx.fillRect(cxWrapped + botOff,  cy + 24, 2,   8);
+            }
 
             // === FAR PARALLAX: City skyline ===
             const farP = 0.15;
-            for (let b of bgElements.buildings) {
+            // Neon window palette — VA-11 HALL-A sparsity
+            const neonWindowColors = ['#ff00ff', '#00ffff', '#ff00aa', '#aa00ff'];
+            for (let bi2 = 0; bi2 < bgElements.buildings.length; bi2++) {
+                const b = bgElements.buildings[bi2];
                 const bx = b.x - cameraX * farP;
                 if (bx + b.w < -100 || bx > canvas.width + 100) continue;
 
-                // Building body
-                ctx.fillStyle = b.color;
+                // Building body — dark plum silhouette, clearly visible against sky
+                ctx.fillStyle = '#150028';
                 ctx.fillRect(bx, 520 - b.h, b.w, b.h);
 
-                // Windows (dim yellow dots)
-                ctx.fillStyle = 'rgba(255, 200, 50, 0.3)';
+                // Windows — one neon color per building, ~30% lit, 0.5–0.7 alpha
+                const neonCol = neonWindowColors[bi2 % neonWindowColors.length];
                 const wSpacing = b.w / (b.windows + 1);
                 const rowH = b.h / (b.windowRows + 1);
+                // Use a simple per-building deterministic pattern for lit windows
+                const litSeed = (bi2 * 7 + 3) & 0xffff;
                 for (let wy = 1; wy <= b.windowRows; wy++) {
                     for (let wx = 1; wx <= b.windows; wx++) {
+                        // ~30% chance: use deterministic hash of indices
+                        const hash = ((litSeed ^ (wy * 31) ^ (wx * 17)) * 2654435761) >>> 0;
+                        if ((hash % 100) >= 30) continue;
+                        const alpha = 0.5 + ((hash % 21) / 100); // 0.50–0.70
+                        // Parse hex neon color into rgba
+                        const r = parseInt(neonCol.slice(1, 3), 16);
+                        const g2 = parseInt(neonCol.slice(3, 5), 16);
+                        const bl = parseInt(neonCol.slice(5, 7), 16);
+                        ctx.fillStyle = `rgba(${r},${g2},${bl},${alpha.toFixed(2)})`;
                         ctx.fillRect(bx + wx * wSpacing - 3, 520 - b.h + wy * rowH - 3, 6, 6);
                     }
+                }
+
+                // Neon sign — one per ~4–5 buildings (every 4th), 3–4px tall rect
+                if (bi2 % 4 === 0) {
+                    const signY = 520 - b.h + 12;
+                    const signW = Math.min(b.w - 8, 28 + (bi2 % 3) * 8);
+                    ctx.fillStyle = neonCol;
+                    ctx.globalAlpha = 0.85;
+                    ctx.fillRect(bx + 4, signY, signW, 3 + (bi2 % 2)); // 3–4px tall
+                    ctx.globalAlpha = 1;
                 }
 
                 // Antenna
@@ -1492,7 +2166,7 @@
             // --- Fredriksten Fortress silhouette (on a hill, left side) ---
             const fX = 600 - cameraX * landmarkP;
             ctx.fillStyle = '#0d0018';
-            ctx.globalAlpha = 0.7;
+            ctx.globalAlpha = 1.0;
 
             // Hill / mountain the fortress sits on
             ctx.beginPath();
@@ -1581,7 +2255,7 @@
 
             // The tall tower/chimney
             ctx.fillStyle = '#0d0018';
-            ctx.globalAlpha = 0.65;
+            ctx.globalAlpha = 1.0;
 
             // Main tower shaft (tall and narrow)
             ctx.fillRect(nX - 12, 120, 24, 400);
@@ -1606,7 +2280,7 @@
 
             // Base / factory building around the tower
             ctx.fillStyle = '#0d0018';
-            ctx.globalAlpha = 0.5;
+            ctx.globalAlpha = 1.0;
             ctx.fillRect(nX - 80, 420, 160, 100);
             ctx.fillRect(nX - 100, 450, 200, 70);
 
@@ -1711,7 +2385,7 @@
                 }
             }
 
-            // Graffiti tags
+            // Graffiti tags — faded neons (alpha baked into rgba color strings)
             for (let g of bgElements.graffiti) {
                 const gx = g.x - cameraX * (g.onGround ? 1 : midP);
                 if (gx < -100 || gx > canvas.width + 100) continue;
@@ -1721,13 +2395,14 @@
                 ctx.rotate(g.rotation);
                 ctx.font = `bold ${g.size}px 'Press Start 2P', monospace`;
                 ctx.fillStyle = g.color;
-                ctx.globalAlpha = g.onGround ? 0.06 : 0.12;
+                // Alpha is baked into the rgba color; use globalAlpha=1 so it isn't dimmed further
+                ctx.globalAlpha = g.onGround ? 0.5 : 1;
                 ctx.fillText(g.text, 0, 0);
 
                 // Spray drip effect
                 if (!g.onGround && g.size > 20) {
                     ctx.fillStyle = g.color;
-                    ctx.globalAlpha = 0.06;
+                    ctx.globalAlpha = 0.5;
                     for (let d = 0; d < 3; d++) {
                         const dripX = d * g.size * 0.4;
                         ctx.fillRect(dripX, 4, 3, 8 + d * 6);
@@ -1772,7 +2447,15 @@
                 ctx.beginPath();
                 ctx.ellipse(px + p.w / 2, 522, p.w / 2, p.h / 2, 0, 0, Math.PI * 2);
                 ctx.fill();
+
+                // Magenta reflection stripe — 2px horizontal bar across puddle center
+                ctx.fillStyle = 'rgba(255,0,255,0.25)';
+                ctx.fillRect(px, 521, p.w, 2);
             }
+
+            // === GUTTER LINE — 2px cyan at exactly groundY (520) ===
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(0, level.groundY, canvas.width, 2);
 
             // Trash cans
             for (let t of bgElements.trashCans) {
@@ -1974,8 +2657,8 @@
 
             // === Playground elements (static, world-space) ===
 
-            // Jungle gym (rusted)
-            ctx.strokeStyle = '#337777';
+            // Jungle gym — #00ffff bars with #ffffff 1px inner highlight
+            ctx.strokeStyle = '#00ffff';
             ctx.lineWidth = 14;
             ctx.beginPath();
             ctx.moveTo(620 - cameraX, 380);
@@ -1985,13 +2668,29 @@
             ctx.moveTo(880 - cameraX, 380);
             ctx.lineTo(880 - cameraX, 520);
             ctx.stroke();
-            // Rust spots
-            ctx.fillStyle = 'rgba(139, 69, 19, 0.4)';
-            ctx.fillRect(650 - cameraX, 378, 20, 6);
-            ctx.fillRect(820 - cameraX, 376, 15, 8);
-            // Cross bars
-            ctx.strokeStyle = '#2a6666';
+            // White inner highlight (1px line on top of the cyan stroke)
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(620 - cameraX, 380);
+            ctx.lineTo(880 - cameraX, 380);
+            ctx.moveTo(620 - cameraX, 380);
+            ctx.lineTo(620 - cameraX, 520);
+            ctx.moveTo(880 - cameraX, 380);
+            ctx.lineTo(880 - cameraX, 520);
+            ctx.stroke();
+            // Cross bars — cyan
+            ctx.strokeStyle = '#00ffff';
             ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.moveTo(620 - cameraX, 420);
+            ctx.lineTo(880 - cameraX, 420);
+            ctx.moveTo(620 - cameraX, 460);
+            ctx.lineTo(880 - cameraX, 460);
+            ctx.stroke();
+            // Cross bar highlights
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(620 - cameraX, 420);
             ctx.lineTo(880 - cameraX, 420);
@@ -2018,51 +2717,6 @@
             ctx.fillText('SASS', 1655 - cameraX, 400);
             ctx.globalAlpha = 1;
 
-            // Swings (rusty chains)
-            ctx.strokeStyle = '#887744';
-            ctx.lineWidth = 6;
-            // Top bar
-            ctx.beginPath();
-            ctx.moveTo(1120 - cameraX, 180);
-            ctx.lineTo(1380 - cameraX, 180);
-            ctx.stroke();
-            // Chains with slight sway
-            const swingTime = Date.now() / 1000;
-            const sway1 = Math.sin(swingTime * 1.2) * 8;
-            const sway2 = Math.sin(swingTime * 0.9 + 1) * 10;
-            ctx.lineWidth = 3;
-            ctx.strokeStyle = '#776633';
-            ctx.beginPath();
-            ctx.moveTo(1180 - cameraX, 180);
-            ctx.lineTo(1180 - cameraX + sway1, 380);
-            ctx.moveTo(1300 - cameraX, 180);
-            ctx.lineTo(1300 - cameraX + sway2, 380);
-            ctx.stroke();
-            // Seats
-            ctx.fillStyle = '#222';
-            ctx.fillRect(1168 - cameraX + sway1, 378, 24, 6);
-            ctx.fillRect(1288 - cameraX + sway2, 378, 24, 6);
-            // One swing broken — chain dangling
-            ctx.strokeStyle = '#554422';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(1240 - cameraX, 180);
-            ctx.lineTo(1245 - cameraX, 280);
-            ctx.stroke();
-
-            // Support poles (rusty)
-            ctx.fillStyle = '#554433';
-            ctx.fillRect(1120 - cameraX, 180, 8, 340);
-            ctx.fillRect(1374 - cameraX, 180, 8, 340);
-
-            // Broken bench near end of level
-            ctx.fillStyle = '#443322';
-            ctx.fillRect(2800 - cameraX, 490, 80, 8);
-            ctx.fillRect(2810 - cameraX, 498, 8, 22);
-            ctx.fillRect(2862 - cameraX, 498, 8, 22);
-            // One slat missing
-            ctx.fillStyle = '#332211';
-            ctx.fillRect(2800 - cameraX, 480, 50, 8);
 
             // Street lamp (flickering)
             const lampFlicker = Math.sin(Date.now() / 100) > 0.3 ? 1 : 0.2;
@@ -2084,6 +2738,411 @@
                 // Bulb
                 ctx.fillStyle = `rgba(255, 220, 120, ${0.8 * lampFlicker})`;
                 ctx.fillRect(lampX + 22, 322, 10, 8);
+            }
+        }
+
+        // ========================================================
+        // LEVEL 2 — SKOFABRIKKEN BACKGROUND
+        // ========================================================
+        function drawSkofabrikkenBackground() {
+            const camX = cameraX;
+            const W = canvas.width;
+            const H = canvas.height;
+            const groundY = level.groundY;
+
+            // Sky gradient — bright blue
+            const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+            skyGrad.addColorStop(0, '#3a82b8');
+            skyGrad.addColorStop(1, '#8ec8f0');
+            ctx.fillStyle = skyGrad;
+            ctx.fillRect(0, 0, W, groundY);
+
+            // Pixel clouds (stepped blocks)
+            for (let cl of bgElements.clouds) {
+                const cx = ((cl.x - camX * 0.1) % (LEVEL_WIDTH + 200)) - 100;
+                if (cx < -200 || cx > W + 200) continue;
+                ctx.fillStyle = '#e8e8e8';
+                const cw = cl.w, cy = cl.y;
+                ctx.fillRect(cx, cy, cw, 14);
+                ctx.fillRect(cx + cw * 0.15, cy - 10, cw * 0.7, 10);
+                ctx.fillRect(cx + cw * 0.3, cy - 18, cw * 0.4, 8);
+                ctx.fillStyle = '#d0d0d0';
+                ctx.fillRect(cx, cy + 14, cw, 4);
+            }
+
+            // Far urban roofline (parallax 0.15x)
+            const r0off = -camX * 0.15;
+            const roofBuildings = [
+                {x:0, w:200, h:60}, {x:220, w:150, h:80}, {x:390, w:180, h:50},
+                {x:590, w:220, h:90}, {x:830, w:160, h:65}, {x:1010, w:200, h:70},
+                {x:1230, w:180, h:55}, {x:1430, w:220, h:85}, {x:1670, w:160, h:60},
+            ];
+            for (let rb of roofBuildings) {
+                const bx = (rb.x + r0off) % (LEVEL_WIDTH + 400) - 200;
+                ctx.fillStyle = '#707080';
+                ctx.fillRect(bx, groundY - rb.h - 80, rb.w, rb.h + 10);
+                // Windows
+                ctx.fillStyle = 'rgba(180,200,220,0.5)';
+                for (let wy = 10; wy < rb.h - 10; wy += 20) {
+                    for (let wx = 10; wx < rb.w - 10; wx += 22) {
+                        ctx.fillRect(bx + wx, groundY - rb.h - 80 + wy, 10, 12);
+                    }
+                }
+            }
+
+            // Skofabrikken building (parallax 0.3x)
+            const bldOff = -camX * 0.3;
+            const bldX = bldOff;
+            const bldTop = 60;
+            const bldH = groundY - bldTop - 80;
+
+            // Brick wings
+            function drawBrickWing(wx, ww, wh) {
+                // Base
+                ctx.fillStyle = '#a04520';
+                ctx.fillRect(wx, bldTop, ww, wh);
+                // Brick pattern
+                for (let row = 0; row < wh; row += 8) {
+                    const offset = (Math.floor(row / 8) % 2) * 7;
+                    for (let col = -offset; col < ww; col += 14) {
+                        ctx.fillStyle = '#c05830';
+                        ctx.fillRect(wx + col + 1, bldTop + row + 1, 12, 6);
+                    }
+                }
+                // Windows
+                ctx.fillStyle = 'rgba(140,180,200,0.6)';
+                for (let wy2 = 20; wy2 < wh - 30; wy2 += 55) {
+                    for (let wcx = 14; wcx < ww - 30; wcx += 44) {
+                        ctx.fillStyle = 'rgba(140,180,200,0.6)';
+                        ctx.fillRect(wx + wcx, bldTop + wy2, 30, 40);
+                        ctx.fillStyle = '#223344';
+                        ctx.strokeStyle = '#223344';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(wx + wcx, bldTop + wy2, 30, 40);
+                        // Cross dividers
+                        ctx.beginPath();
+                        ctx.moveTo(wx + wcx + 15, bldTop + wy2);
+                        ctx.lineTo(wx + wcx + 15, bldTop + wy2 + 40);
+                        ctx.moveTo(wx + wcx, bldTop + wy2 + 20);
+                        ctx.lineTo(wx + wcx + 30, bldTop + wy2 + 20);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            const wingW = Math.floor(W * 0.35);
+            const entrW = Math.floor(W * 0.3);
+            const entrX = bldX + wingW;
+            drawBrickWing(bldX, wingW, bldH);
+            drawBrickWing(bldX + wingW + entrW, wingW, bldH);
+
+            // Glass entrance (curved feel via trapezoid)
+            ctx.fillStyle = 'rgba(160,200,220,0.4)';
+            ctx.fillRect(entrX, bldTop, entrW, bldH);
+
+            // Blue steel columns
+            ctx.fillStyle = '#4466aa';
+            const colSpacing = Math.floor(entrW / 4);
+            for (let ci = 0; ci <= 3; ci++) {
+                ctx.fillRect(entrX + ci * colSpacing - 5, bldTop, 10, bldH);
+                ctx.fillStyle = '#6688cc';
+                ctx.fillRect(entrX + ci * colSpacing - 4, bldTop, 3, bldH);
+                ctx.fillStyle = '#4466aa';
+            }
+
+            // Glass reflections diagonal stripe
+            ctx.fillStyle = 'rgba(200,230,255,0.12)';
+            ctx.beginPath();
+            ctx.moveTo(entrX + 20, bldTop);
+            ctx.lineTo(entrX + 80, bldTop);
+            ctx.lineTo(entrX + 40, bldTop + bldH);
+            ctx.lineTo(entrX - 20, bldTop + bldH);
+            ctx.closePath();
+            ctx.fill();
+
+            // SKOFABRIKKEN sign
+            ctx.fillStyle = '#eeeeff';
+            ctx.font = 'bold 13px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('SKOFABRIKKEN', bldX + wingW + entrW / 2, bldTop + 36);
+            ctx.textAlign = 'left';
+
+            // Roofline
+            ctx.fillStyle = '#333340';
+            ctx.fillRect(bldX, bldTop - 10, wingW * 2 + entrW, 10);
+
+            // Entrance doors
+            ctx.fillStyle = 'rgba(180,210,230,0.8)';
+            ctx.fillRect(entrX + entrW / 2 - 22, groundY - 84, 20, 60);
+            ctx.fillRect(entrX + entrW / 2 + 2, groundY - 84, 20, 60);
+            ctx.strokeStyle = '#4466aa';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(entrX + entrW / 2 - 22, groundY - 84, 20, 60);
+            ctx.strokeRect(entrX + entrW / 2 + 2, groundY - 84, 20, 60);
+
+            // Bollards
+            ctx.fillStyle = '#223355';
+            for (let bi = 0; bi < 5; bi++) {
+                const box = bldX + wingW * 0.3 + bi * 120;
+                ctx.fillRect(box, groundY - 20, 10, 18);
+                ctx.beginPath();
+                ctx.arc(box + 5, groundY - 20, 5, Math.PI, 0);
+                ctx.fill();
+            }
+
+            // NYE VARER neon sign in one window
+            ctx.fillStyle = 'rgba(255,0,255,0.8)';
+            ctx.font = '8px "Press Start 2P", monospace';
+            ctx.fillText('NYE VARER', bldX + wingW + 14, bldTop + 50);
+
+            // Gutter line
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(0, groundY, W, 1);
+        }
+
+        function drawSkofabrikkenGround() {
+            const groundY = level.groundY;
+            const W = canvas.width;
+
+            // Paving slab base
+            ctx.fillStyle = '#c0bdb0';
+            ctx.fillRect(0, groundY, W, canvas.height - groundY);
+
+            // Slab grid
+            ctx.strokeStyle = '#9a9890';
+            ctx.lineWidth = 1;
+            const slabSize = 80;
+            for (let sx = ((-cameraX) % slabSize + slabSize) % slabSize; sx < W; sx += slabSize) {
+                ctx.beginPath();
+                ctx.moveTo(sx, groundY);
+                ctx.lineTo(sx, canvas.height);
+                ctx.stroke();
+            }
+            for (let sy = groundY; sy < canvas.height; sy += slabSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, sy);
+                ctx.lineTo(W, sy);
+                ctx.stroke();
+            }
+
+            // Surface texture lines
+            ctx.strokeStyle = '#aaa8a0';
+            ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.4;
+            for (let ty = groundY + 20; ty < groundY + 60; ty += 18) {
+                ctx.beginPath();
+                ctx.moveTo(0, ty);
+                ctx.lineTo(W, ty);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+
+            // Random chewing gum / scuffs
+            ctx.fillStyle = '#444440';
+            const seed2 = 12345;
+            for (let i = 0; i < 20; i++) {
+                const gx = ((seed2 * (i + 1) * 37 + 500) % (LEVEL_WIDTH)) - cameraX;
+                if (gx < 0 || gx > W) continue;
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.ellipse(gx, groundY + 8 + (i % 3) * 10, 4, 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        // ========================================================
+        // LEVEL 3 — STRANDA TRIMPARK BACKGROUND
+        // ========================================================
+        function drawTrimparkBackground() {
+            const camX = cameraX;
+            const W = canvas.width;
+            const groundY = level.groundY;
+
+            // Sky gradient — bright outdoor blue
+            const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+            skyGrad.addColorStop(0, '#3a8fc8');
+            skyGrad.addColorStop(1, '#85c8f0');
+            ctx.fillStyle = skyGrad;
+            ctx.fillRect(0, 0, W, groundY);
+
+            // Large fluffy pixel clouds
+            for (let cl of bgElements.clouds) {
+                const cx = ((cl.x - camX * 0.1) % (LEVEL_WIDTH + 200)) - 100;
+                if (cx < -200 || cx > W + 200) continue;
+                const cw = cl.w * 1.4;
+                const cy = cl.y;
+                ctx.fillStyle = '#f0f0f0';
+                ctx.fillRect(cx, cy, cw, 18);
+                ctx.fillRect(cx + cw * 0.1, cy - 14, cw * 0.8, 14);
+                ctx.fillRect(cx + cw * 0.2, cy - 24, cw * 0.6, 10);
+                ctx.fillRect(cx + cw * 0.35, cy - 32, cw * 0.3, 8);
+                ctx.fillStyle = '#d8d8d8';
+                ctx.fillRect(cx, cy + 18, cw, 4);
+            }
+
+            // Tree canopy (parallax 0.15x) — dense summer green
+            const treeOff = -camX * 0.15;
+            const treeSeeds = [
+                {x:0, w:180}, {x:160, w:140}, {x:280, w:200}, {x:460, w:160},
+                {x:600, w:180}, {x:760, w:220}, {x:960, w:160}, {x:1100, w:200},
+                {x:1280, w:180}, {x:1440, w:160}, {x:1580, w:240}, {x:1800, w:180},
+                {x:1960, w:200}, {x:2140, w:160}, {x:2280, w:220}, {x:2480, w:180},
+                {x:2640, w:160}, {x:2780, w:200}, {x:2960, w:220}, {x:3160, w:180},
+                {x:3320, w:200}, {x:3500, w:160},
+            ];
+            for (let tr of treeSeeds) {
+                const tx = tr.x + treeOff;
+                if (tx + tr.w < -100 || tx > W + 100) continue;
+                const trunkX = tx + tr.w / 2;
+                // Trunk
+                ctx.fillStyle = '#3a2010';
+                ctx.fillRect(trunkX - 5, 310, 10, 100);
+                // Canopy layers
+                ctx.fillStyle = '#2a5520';
+                ctx.beginPath();
+                ctx.arc(trunkX, 240, tr.w * 0.55, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#3a7a28';
+                ctx.beginPath();
+                ctx.arc(trunkX - tr.w * 0.15, 220, tr.w * 0.45, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(trunkX + tr.w * 0.15, 230, tr.w * 0.4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#5aaa38';
+                ctx.beginPath();
+                ctx.arc(trunkX, 200, tr.w * 0.3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Fence (parallax 0.35x)
+            const fOff = -camX * 0.35;
+            ctx.fillStyle = '#4a3820';
+            ctx.fillRect(0, 318, W, 6);
+            for (let fi = 0; fi < LEVEL_WIDTH; fi += 60) {
+                const fx = fi + fOff;
+                if (fx < -10 || fx > W + 10) continue;
+                ctx.fillRect(fx, 300, 5, 26);
+            }
+
+            // Orange fitness equipment bg decorations (parallax 0.5x)
+            const eqOff = -camX * 0.5;
+            const eqStations = [
+                {x: 300, type: 'pullup'}, {x: 800, type: 'dip'},
+                {x: 1300, type: 'bar'}, {x: 1800, type: 'pullup'},
+                {x: 2300, type: 'dip'}, {x: 2800, type: 'bar'},
+                {x: 3400, type: 'pullup'},
+            ];
+            for (let eq of eqStations) {
+                const ex = eq.x + eqOff;
+                if (ex < -150 || ex > W + 150) continue;
+                ctx.fillStyle = '#c85020';
+                if (eq.type === 'pullup') {
+                    // Two posts + crossbar
+                    ctx.fillRect(ex - 30, 350, 8, 130);
+                    ctx.fillRect(ex + 22, 350, 8, 130);
+                    ctx.fillRect(ex - 32, 348, 64, 10);
+                    // Highlight
+                    ctx.fillStyle = '#e87040';
+                    ctx.fillRect(ex - 30, 350, 3, 130);
+                    ctx.fillRect(ex + 22, 350, 3, 80);
+                } else if (eq.type === 'dip') {
+                    // Dip station frame
+                    ctx.fillRect(ex - 20, 360, 8, 120);
+                    ctx.fillRect(ex + 12, 360, 8, 120);
+                    ctx.fillRect(ex - 20, 360, 40, 8);
+                    // Handles
+                    ctx.fillRect(ex - 28, 380, 8, 30);
+                    ctx.fillRect(ex + 20, 380, 8, 30);
+                    ctx.fillStyle = '#e87040';
+                    ctx.fillRect(ex - 20, 360, 3, 120);
+                } else {
+                    // Single horizontal bar
+                    ctx.fillRect(ex - 10, 400, 6, 80);
+                    ctx.fillRect(ex + 4, 400, 6, 80);
+                    ctx.fillRect(ex - 12, 396, 28, 8);
+                    ctx.fillStyle = '#e87040';
+                    ctx.fillRect(ex - 10, 400, 3, 80);
+                }
+            }
+
+            // Wooden benches bg (parallax 0.6x)
+            const benchOff = -camX * 0.6;
+            const bgBenches = [{x:400}, {x:1200}, {x:2400}, {x:3200}];
+            for (let bb of bgBenches) {
+                const bx = bb.x + benchOff;
+                if (bx < -120 || bx > W + 120) continue;
+                ctx.fillStyle = '#a07848';
+                ctx.fillRect(bx, 450, 80, 10);
+                ctx.fillStyle = '#7a5830';
+                ctx.fillRect(bx + 6, 460, 6, 20);
+                ctx.fillRect(bx + 68, 460, 6, 20);
+            }
+
+            // Covered pavilion bg (parallax 0.4x)
+            const pavOff = -camX * 0.4;
+            const pavX = 2800 + pavOff;
+            if (pavX > -200 && pavX < W + 200) {
+                ctx.fillStyle = '#444440';
+                ctx.fillRect(pavX, 300, 200, 14);
+                ctx.fillStyle = '#555550';
+                ctx.fillRect(pavX + 10, 314, 6, 160);
+                ctx.fillRect(pavX + 90, 314, 6, 160);
+                ctx.fillRect(pavX + 184, 314, 6, 160);
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                ctx.fillRect(pavX, 314, 200, 100);
+            }
+
+            // Halden Kommune sign (neon signature)
+            const signX = 1600 - camX * 0.6;
+            ctx.fillStyle = '#ff00ff';
+            ctx.fillRect(signX, 495, 30, 20);
+            ctx.fillStyle = '#cc00cc';
+            ctx.fillRect(signX + 2, 497, 26, 16);
+            ctx.fillStyle = '#ff00ff';
+            ctx.beginPath();
+            ctx.arc(signX + 15, 494, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = '5px monospace';
+            ctx.fillText('HALDEN', signX + 1, 509);
+
+            // Gutter line
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(0, groundY, W, 1);
+        }
+
+        function drawTrimparkGround() {
+            const groundY = level.groundY;
+            const W = canvas.width;
+
+            // Asphalt base
+            ctx.fillStyle = '#2a2a28';
+            ctx.fillRect(0, groundY, W, canvas.height - groundY);
+
+            // Texture streaks
+            ctx.strokeStyle = '#3a3a38';
+            ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.5;
+            for (let ty = groundY + 8; ty < groundY + 50; ty += 14) {
+                ctx.beginPath();
+                ctx.moveTo(0, ty);
+                ctx.lineTo(W, ty);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+
+            // Painted zone lines
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = 2;
+            const lineSpacing = 300;
+            const lOff = (-cameraX % lineSpacing + lineSpacing) % lineSpacing;
+            for (let lx = lOff; lx < W; lx += lineSpacing) {
+                ctx.beginPath();
+                ctx.moveTo(lx, groundY + 10);
+                ctx.lineTo(lx + 60, groundY + 10);
+                ctx.stroke();
             }
         }
 
@@ -2140,7 +3199,10 @@
 
                 const wb = Math.sin(Date.now() / 400 + v.animationOffset) * 1.5;
                 const isKid = v.type === 'kid';
-                const scale = isKid ? 1.2 : v.type === 'lunchlady' ? 1.7 : 1.45;
+                const scale = isKid ? 1.2
+                    : v.type === 'lunchlady' ? 1.7
+                    : v.type === 'security_guard' ? 1.6
+                    : 1.45;
 
                 ctx.save();
                 ctx.translate(sx, v.y);
@@ -2158,44 +3220,28 @@
                 }
 
                 const headW = 14;
-                const isSitting = v.pose === 'sitting_swing' || v.pose === 'sitting_bench';
-
                 // === LEGS ===
-                if (isSitting) {
-                    // Legs bent forward (sitting)
-                    ctx.fillStyle = v.pantsColor;
-                    ctx.fillRect(-10, -10, 8, 10); // upper legs (short, going down)
-                    ctx.fillRect(2, -10, 8, 10);
-                    // Lower legs hanging / forward
-                    ctx.fillStyle = v.pantsColor;
-                    ctx.save();
-                    ctx.translate(-6, 0);
-                    ctx.rotate(0.8);
-                    ctx.fillRect(-4, 0, 8, 12);
-                    ctx.restore();
-                    ctx.save();
-                    ctx.translate(6, 0);
-                    ctx.rotate(0.8);
-                    ctx.fillRect(-4, 0, 8, 12);
-                    ctx.restore();
-                    // Shoes (dangling forward)
-                    ctx.fillStyle = '#222';
-                    ctx.fillRect(2, 8, 12, 5);
-                    ctx.fillRect(14, 8, 12, 5);
-                } else {
-                    // Standing legs
-                    ctx.fillStyle = v.pantsColor;
-                    ctx.fillRect(-10, -14, 8, 14);
-                    ctx.fillRect(2, -14, 8, 14);
-                    // Shoes
-                    ctx.fillStyle = '#222';
-                    ctx.fillRect(-12, -2, 12, 5);
-                    ctx.fillRect(0, -2, 12, 5);
-                }
+                ctx.fillStyle = v.pantsColor;
+                ctx.fillRect(-10, -14, 8, 14);
+                ctx.fillRect(2, -14, 8, 14);
+                // Shoes
+                ctx.fillStyle = '#222';
+                ctx.fillRect(-12, -2, 12, 5);
+                ctx.fillRect(0, -2, 12, 5);
 
                 // === BODY ===
-                ctx.fillStyle = v.shirtColor;
-                const bodyH = isKid ? 30 : v.type === 'lunchlady' ? 42 : 36;
+                // Security guard: override shirt to dark navy
+                if (v.type === 'security_guard') {
+                    ctx.fillStyle = '#1a1a33';
+                } else if (v.type === 'store_clerk') {
+                    ctx.fillStyle = '#334488';
+                } else {
+                    ctx.fillStyle = v.shirtColor;
+                }
+                const bodyH = isKid ? 30
+                    : v.type === 'lunchlady' ? 42
+                    : v.type === 'security_guard' ? 42
+                    : 36;
                 ctx.fillRect(-16, -14 - bodyH, 32, bodyH);
 
                 // Shirt detail
@@ -2221,6 +3267,35 @@
                     // Apron
                     ctx.fillStyle = '#eee';
                     ctx.fillRect(-12, -14 - bodyH + 10, 24, bodyH - 10);
+                } else if (v.type === 'store_clerk') {
+                    // Lanyard + name tag
+                    ctx.fillStyle = '#ffcc00';
+                    ctx.fillRect(-1, -14 - bodyH + 4, 2, 18);
+                    ctx.fillStyle = '#eee';
+                    ctx.fillRect(-5, -14 - bodyH + 20, 10, 6);
+                } else if (v.type === 'shopper') {
+                    // Casual jacket lapels
+                    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                    ctx.beginPath();
+                    ctx.moveTo(-6, -14 - bodyH + 2);
+                    ctx.lineTo(0, -14 - bodyH + 12);
+                    ctx.lineTo(6, -14 - bodyH + 2);
+                    ctx.fill();
+                } else if (v.type === 'security_guard') {
+                    // Badge
+                    ctx.fillStyle = '#c8a030';
+                    ctx.fillRect(-6, -14 - bodyH + 8, 10, 8);
+                    ctx.fillStyle = '#111';
+                    ctx.fillRect(-4, -14 - bodyH + 10, 6, 4);
+                    // Belt at waist
+                    ctx.fillStyle = '#111';
+                    ctx.fillRect(-16, -14 - 4, 32, 4);
+                    // Arms crossed when low trauma
+                    if (v.trauma < 60) {
+                        ctx.fillStyle = '#1a1a33';
+                        ctx.fillRect(-22, -14 - bodyH + 20, 18, 8);
+                        ctx.fillRect(4, -14 - bodyH + 20, 18, 8);
+                    }
                 }
 
                 // === ARMS (hanging at sides) ===
@@ -2251,6 +3326,28 @@
                 ctx.arc(1, 28, 4, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.restore();
+
+                // === TYPE-SPECIFIC PROPS ===
+                if (v.type === 'shopper' && !v.fainted) {
+                    // Shopping bags hanging from hands
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(-30, -14 + 24, 14, 16);
+                    ctx.fillStyle = '#dd2244';
+                    ctx.fillRect(-28, -14 + 24, 10, 2);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(16, -14 + 24, 14, 16);
+                    ctx.fillStyle = '#dd2244';
+                    ctx.fillRect(18, -14 + 24, 10, 2);
+                }
+                if (v.type === 'security_guard' && !v.fainted) {
+                    // Peaked cap
+                    const capY = -14 - bodyH - 28;
+                    ctx.fillStyle = '#1a1a33';
+                    ctx.fillRect(-18, capY, 36, 8);
+                    ctx.fillRect(-10, capY - 6, 20, 6);
+                    ctx.fillStyle = '#c8a030';
+                    ctx.fillRect(-18, capY + 8, 36, 2);
+                }
 
                 // === HEAD ===
                 const headY = -14 - bodyH - 14;
@@ -2412,6 +3509,8 @@
 
                 ctx.restore();
             }
+            // Draw boss if on level 3
+            if (currentLevel === 3 && boss) boss.draw();
         }
 
         function drawParticles() {
@@ -2450,13 +3549,32 @@
             // Combo
             document.getElementById('combo').textContent = '×' + combo;
             document.getElementById('combo').style.color = combo > 4 ? '#ffff00' : '#00ffff';
+
+            // Boss bar (Level 3 only)
+            if (currentLevel === 3 && boss) {
+                const hpPct = Math.max(0, (boss.hp / boss.maxHp) * 100);
+                const bossBarFill = document.getElementById('boss-bar');
+                bossBarFill.style.width = hpPct + '%';
+                bossBarFill.style.background = boss.phase === 1
+                    ? 'linear-gradient(90deg, #ff6600, #ff0000)'
+                    : boss.phase === 2
+                        ? 'linear-gradient(90deg, #ff2200, #ff00aa)'
+                        : 'linear-gradient(90deg, #ff00ff, #ff0000)';
+                if (boss.hp < boss.maxHp * 0.15) {
+                    bossBarFill.style.opacity = Math.sin(Date.now() / 100) > 0 ? '1' : '0.4';
+                } else {
+                    bossBarFill.style.opacity = '1';
+                }
+                document.getElementById('boss-phase').textContent = 'PHASE ' + boss.phase;
+            }
         }
 
         function checkWinCondition() {
-            if (score >= 850 && heat < 95) {
+            if (currentLevel === 3) return; // handled by boss defeat
+            if (score >= WIN_SCORE[currentLevel] && heat < 95) {
                 gameState = 'levelcomplete';
                 document.getElementById('level-complete-screen').style.display = 'flex';
-                document.getElementById('level-score').innerHTML = `FINAL LUNCH: <span style="color:#00ff00">$${score}</span><br>HEAT: ${Math.floor(heat)}%`;
+                document.getElementById('level-score').innerHTML = `${level.name.toUpperCase()}<br>LUNCH MONEY: <span style="color:#00ff00">$${score}</span><br>HEAT: ${Math.floor(heat)}%`;
             }
         }
 
@@ -2549,28 +3667,56 @@
             drawBackground();
             // Draw ground and platforms
             drawGround();
-            // Elevated platforms (playground structures)
+            // Elevated platforms
             for (let p of level.platforms) {
                 if (p.y >= 520) continue; // skip ground platform
                 const ppx = p.x - cameraX;
-                // Platform shadow
-                ctx.fillStyle = 'rgba(0,0,0,0.3)';
-                ctx.fillRect(ppx + 4, p.y + 4, p.w, p.h);
-                // Platform body (wood plank look)
-                ctx.fillStyle = '#5a3a1a';
-                ctx.fillRect(ppx, p.y, p.w, p.h);
-                // Plank lines
-                ctx.strokeStyle = '#4a2a10';
-                ctx.lineWidth = 1;
-                for (let lx = ppx + 20; lx < ppx + p.w; lx += 30) {
-                    ctx.beginPath();
-                    ctx.moveTo(lx, p.y);
-                    ctx.lineTo(lx, p.y + p.h);
-                    ctx.stroke();
+                if (ppx + p.w < -20 || ppx > canvas.width + 20) continue;
+
+                if (currentLevel === 1) {
+                    // Wood plank look
+                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                    ctx.fillRect(ppx + 4, p.y + 4, p.w, p.h);
+                    ctx.fillStyle = '#5a3a1a';
+                    ctx.fillRect(ppx, p.y, p.w, p.h);
+                    ctx.strokeStyle = '#4a2a10';
+                    ctx.lineWidth = 1;
+                    for (let lx = ppx + 20; lx < ppx + p.w; lx += 30) {
+                        ctx.beginPath();
+                        ctx.moveTo(lx, p.y);
+                        ctx.lineTo(lx, p.y + p.h);
+                        ctx.stroke();
+                    }
+                    ctx.fillStyle = '#7a5a3a';
+                    ctx.fillRect(ppx, p.y, p.w, 3);
+                } else if (currentLevel === 2) {
+                    // Concrete/slab look for Skofabrikken
+                    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                    ctx.fillRect(ppx + 3, p.y + 4, p.w, p.h);
+                    ctx.fillStyle = '#aaa890';
+                    ctx.fillRect(ppx, p.y, p.w, p.h);
+                    ctx.fillStyle = '#c8c6b8';
+                    ctx.fillRect(ppx, p.y, p.w, 2);
+                    // Slab joint lines every 40px
+                    ctx.strokeStyle = '#8a8878';
+                    ctx.lineWidth = 1;
+                    for (let lx = ppx + 40; lx < ppx + p.w; lx += 40) {
+                        ctx.beginPath();
+                        ctx.moveTo(lx, p.y);
+                        ctx.lineTo(lx, p.y + p.h);
+                        ctx.stroke();
+                    }
+                } else if (currentLevel === 3) {
+                    // Orange fitness bar look for Trimpark
+                    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+                    ctx.fillRect(ppx + 3, p.y + 5, p.w, p.h);
+                    ctx.fillStyle = '#8a3010';
+                    ctx.fillRect(ppx, p.y, p.w, p.h);
+                    ctx.fillStyle = '#c85020';
+                    ctx.fillRect(ppx + 1, p.y + 1, p.w - 2, p.h - 2);
+                    ctx.fillStyle = '#e87040';
+                    ctx.fillRect(ppx, p.y, p.w, 2);
                 }
-                // Top edge highlight
-                ctx.fillStyle = '#7a5a3a';
-                ctx.fillRect(ppx, p.y, p.w, 3);
             }
 
             drawVictims();
@@ -2584,6 +3730,59 @@
             requestAnimationFrame(gameLoop);
         }
 
+        function loadLevel(n) {
+            boss = null;
+            level.victims = [];
+            level.particles = [];
+            level.moneyBags = [];
+            document.getElementById('boss-bar-container').style.display = n === 3 ? 'flex' : 'none';
+
+            if (n === 1) {
+                level.name = "Playground Panic";
+                level.groundY = 520;
+                level.bgColor = '#1a0033';
+                level.platforms = [
+                    {x:0, y:520, w:LEVEL_WIDTH, h:200},
+                    {x:600, y:400, w:280, h:20},
+                    {x:1100, y:320, w:180, h:20},
+                    {x:1600, y:450, w:220, h:20},
+                    {x:2100, y:280, w:300, h:20},
+                    {x:2600, y:380, w:150, h:20},
+                ];
+            } else if (n === 2) {
+                level.name = "Skofabrikken";
+                level.groundY = 520;
+                level.bgColor = '#1a2233';
+                level.platforms = [
+                    {x:0,    y:520, w:LEVEL_WIDTH, h:200},
+                    {x:500,  y:460, w:300, h:16},
+                    {x:1100, y:460, w:300, h:16},
+                    {x:1700, y:460, w:300, h:16},
+                    {x:2300, y:460, w:300, h:16},
+                    {x:800,  y:420, w:120, h:12},
+                    {x:2000, y:420, w:120, h:12},
+                    {x:1400, y:380, w:200, h:14},
+                    {x:600,  y:320, w:80,  h:14},
+                    {x:2500, y:320, w:80,  h:14},
+                ];
+            } else if (n === 3) {
+                level.name = "Stranda Trimpark";
+                level.groundY = 520;
+                level.bgColor = '#1a3a2a';
+                level.platforms = [
+                    {x:0,    y:520, w:LEVEL_WIDTH, h:200},
+                    {x:400,  y:440, w:160, h:14},
+                    {x:750,  y:360, w:160, h:14},
+                    {x:1200, y:430, w:200, h:14},
+                    {x:1600, y:400, w:140, h:14},
+                    {x:2000, y:340, w:160, h:14},
+                    {x:2400, y:450, w:180, h:14},
+                    {x:2800, y:380, w:140, h:14},
+                    {x:3200, y:340, w:220, h:14},
+                ];
+            }
+        }
+
         function startGame() {
             document.getElementById('start-screen').style.display = 'none';
             stopSiren();
@@ -2594,21 +3793,22 @@
             heat = 12;
             combo = 1;
             cameraX = 0;
-            player.x = 150;
+            player.x = 500;
             player.y = level.groundY - player.height - 20;
+            loadLevel(currentLevel);
             spawnInitialVictims();
             gameLoop();
         }
 
         function restartGame() {
             document.getElementById('game-over-screen').style.display = 'none';
+            currentLevel = 1;
             startGame();
         }
 
         function nextLevel() {
-            // For now, just restart with higher goal (future levels would be added here)
             document.getElementById('level-complete-screen').style.display = 'none';
-            alert("🎉 CONGRATS BESTIE! You cleared the playground!\n\nNext level (School Cafeteria) coming in v1.1 💅");
+            currentLevel = currentLevel < 3 ? currentLevel + 1 : 1;
             startGame();
         }
 
